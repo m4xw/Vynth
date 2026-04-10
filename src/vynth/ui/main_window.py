@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDockWidget,
     QFrame,
@@ -57,13 +58,16 @@ class MainWindow(QMainWindow):
         self._sample_manager: SampleManager | None = None
 
         self.setWindowTitle("Vynth \u2014 Voice Sampler Synthesizer")
-        self.setMinimumSize(1280, 800)
+        self.setMinimumSize(800, 500)
 
         self._create_menus()
         self._create_toolbar()
         self._create_central_widget()
         self._create_dock_widgets()
         self._create_status_bar()
+
+        # Fit window to available screen space and center
+        self._fit_to_screen()
 
         # Periodic status-bar refresh (CPU / voice count)
         self._status_timer = QTimer(self)
@@ -300,6 +304,22 @@ class MainWindow(QMainWindow):
             self._lbl_voices.setText(f"Voices: {voices}")
 
     # ── Public helpers ───────────────────────────────────────
+
+    def _fit_to_screen(self) -> None:
+        """Resize and center the window within the available screen area."""
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            self.resize(1280, 800)
+            return
+        avail = screen.availableGeometry()
+        # Use 90% of available space, but no larger than 1280×800
+        w = min(1280, int(avail.width() * 0.9))
+        h = min(800, int(avail.height() * 0.9))
+        self.resize(w, h)
+        # Center on screen
+        x = avail.x() + (avail.width() - w) // 2
+        y = avail.y() + (avail.height() - h) // 2
+        self.move(x, y)
 
     def set_sample_info(self, text: str) -> None:
         """Update the sample info text in the status bar."""
