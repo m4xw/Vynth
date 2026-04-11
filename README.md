@@ -4,6 +4,10 @@
 
 Vynth turns your voice into a fully playable instrument. Record a vocal sample, edit it in the built-in waveform editor, then use your MIDI keyboard to create choirs, background vocals, pads, textures, and more — all in real time with 64-voice polyphony.
 
+## App Preview
+
+![Vynth application screenshot](docs/app.png)
+
 ---
 
 ## Features
@@ -88,7 +92,7 @@ vynth
 
 1. **Launch Vynth** — `python -m vynth`
 2. **Select your audio device** — Edit → Preferences → Audio tab
-3. **Connect your MIDI keyboard** — It should be auto-detected (check the MIDI dropdown in the toolbar)
+3. **Connect your MIDI keyboard** — It should be auto-detected; confirm it in the MIDI selector in the toolbar
 4. **Record your voice** — Click the red Record button, sing/speak, click Stop
 5. **Select the recording** in the Sample Browser — it appears automatically
 6. **Play it!** — Press keys on your MIDI keyboard. Each key plays your voice at a different pitch.
