@@ -1,5 +1,12 @@
 """Global configuration constants for Vynth."""
+from __future__ import annotations
+
+import json
+import logging
 from dataclasses import dataclass, field
+from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # ── Audio ────────────────────────────────────────────────────────────────
 SAMPLE_RATE = 48_000
@@ -73,3 +80,62 @@ class SessionSettings:
     export_dir: str = ""
     # Recent files
     recent_samples: list[str] = field(default_factory=list)
+
+
+class AppConfig:
+    """Persistent application config stored in user data directory.
+
+    Survives across sessions. Uses QStandardPaths when available,
+    falls back to ``~/.vynth/``.
+    """
+
+    _FILENAME = "vynth_app_config.json"
+
+    def __init__(self) -> None:
+        self._data: dict = {}
+        self._path = self._resolve_path()
+        self._load()
+
+    # ── public API ───────────────────────────────────────────
+
+    @property
+    def last_session_path(self) -> str:
+        return self._data.get("last_session_path", "")
+
+    @last_session_path.setter
+    def last_session_path(self, value: str) -> None:
+        self._data["last_session_path"] = value
+        self._save()
+
+    # ── internals ────────────────────────────────────────────
+
+    @staticmethod
+    def _resolve_path() -> Path:
+        try:
+            from PyQt6.QtCore import QStandardPaths
+
+            base = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.AppDataLocation
+            )
+            if base:
+                return Path(base) / AppConfig._FILENAME
+        except Exception:
+            pass
+        return Path.home() / ".vynth" / AppConfig._FILENAME
+
+    def _load(self) -> None:
+        if self._path.exists():
+            try:
+                self._data = json.loads(self._path.read_text(encoding="utf-8"))
+            except Exception:
+                log.warning("Corrupt app config at %s — starting fresh", self._path)
+                self._data = {}
+
+    def _save(self) -> None:
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(
+                json.dumps(self._data, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            log.warning("Could not write app config to %s", self._path)

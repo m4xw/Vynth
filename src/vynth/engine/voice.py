@@ -93,12 +93,12 @@ class Voice:
 
     # ── Note control ─────────────────────────────────────────────────────
 
-    def note_on(self, note: int, velocity: int, sample: Sample) -> None:
+    def note_on(self, note: int, velocity: int, sample: Sample, start_frame: int = 0) -> None:
         """Start playing *sample* at the pitch implied by *note*."""
         self._sample = sample
         self._note = note
         self._velocity = velocity
-        self._position = 0.0
+        self._position = float(start_frame)
         self._playing = True
         self._start_time = time.monotonic()
 
@@ -139,6 +139,11 @@ class Voice:
         silence = np.zeros((n_frames, 2), dtype=np.float32)
 
         if not self.is_active or self._sample is None:
+            self._playing = False
+            return silence
+
+        # If ADSR finished (release done), stop the voice entirely
+        if not self._adsr.is_active:
             self._playing = False
             return silence
 

@@ -19,6 +19,7 @@ class _EffectModule(QGroupBox):
     """Collapsible module with a bypass button and content area."""
 
     bypassToggled = pyqtSignal(bool)
+    enableToggled = pyqtSignal(bool)
 
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(title, parent)
@@ -60,6 +61,7 @@ class _EffectModule(QGroupBox):
 
     def _on_toggled(self, expanded: bool) -> None:
         self._content.setVisible(expanded)
+        self.enableToggled.emit(expanded)
 
 
 def _make_knob(name: str, minimum: float, maximum: float, value: float,
@@ -82,11 +84,13 @@ class EffectsRack(QWidget):
     """Collapsible effects chain with knobs for each effect."""
 
     paramChanged = pyqtSignal(str, float)
+    bypassChanged = pyqtSignal(str, bool)  # (effect_prefix, bypassed)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
         self._knobs: dict[str, RotaryKnob] = {}
+        self._modules: dict[str, _EffectModule] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -103,11 +107,18 @@ class EffectsRack(QWidget):
         self._build_adsr()
         self._build_pitch_shift()
         self._build_filter()
+        self._build_gain()
         self._build_chorus()
         self._build_delay()
         self._build_reverb()
         self._build_granular()
         self._build_limiter()
+
+        # Capture initial bypass states as defaults for reset_all()
+        self._default_bypass: dict[str, bool] = {
+            prefix: mod._bypass_btn.isChecked()
+            for prefix, mod in self._modules.items()
+        }
 
         self._layout.addStretch()
         scroll.setWidget(container)
@@ -121,6 +132,61 @@ class EffectsRack(QWidget):
             knob.blockSignals(True)
             knob.value = value
             knob.blockSignals(False)
+
+    def get_all_state(self) -> dict:
+        """Return all knob values and bypass/enable states for session save."""
+        state: dict = {"params": {}, "bypass": {}, "enabled": {}}
+        for key, knob in self._knobs.items():
+            state["params"][key] = knob.value
+        for prefix, mod in self._modules.items():
+            state["bypass"][prefix] = mod._bypass_btn.isChecked()
+            state["enabled"][prefix] = mod.isChecked()
+        return state
+
+    def set_all_state(self, state: dict) -> None:
+        """Restore knob values and bypass/enable states from session load."""
+        for key, value in state.get("params", {}).items():
+            knob = self._knobs.get(key)
+            if knob is not None:
+                knob.value = value
+        for prefix, bypassed in state.get("bypass", {}).items():
+            mod = self._modules.get(prefix)
+            if mod is not None:
+                mod._bypass_btn.setChecked(bypassed)
+        for prefix, enabled in state.get("enabled", {}).items():
+            mod = self._modules.get(prefix)
+            if mod is not None:
+                mod.setChecked(enabled)
+
+    def reset_all(self) -> None:
+        """Reset all knobs to their default values and restore default bypass states."""
+        for knob in self._knobs.values():
+            knob.value = knob.default_value
+        for prefix, mod in self._modules.items():
+            mod._bypass_btn.setChecked(self._default_bypass.get(prefix, False))
+            mod.setChecked(True)
+        self.force_emit_all_bypass()
+
+    def force_emit_all_bypass(self) -> None:
+        """Force-emit bypassChanged for every module regardless of prior state.
+
+        Needed on startup/load because Qt skips toggled() when the checked
+        state hasn't changed, so the audio engine would never get the command.
+        """
+        for prefix, mod in self._modules.items():
+            self.bypassChanged.emit(prefix, mod._bypass_btn.isChecked())
+
+    # -- internal helpers ----------------------------------------------------
+
+    def _wire_module(self, prefix: str, mod: _EffectModule) -> None:
+        """Wire bypass and enable signals for a module."""
+        self._modules[prefix] = mod
+        mod.bypassToggled.connect(
+            lambda bypassed, p=prefix: self.bypassChanged.emit(p, bypassed)
+        )
+        mod.enableToggled.connect(
+            lambda enabled, p=prefix: self.bypassChanged.emit(p, not enabled)
+        )
 
     # -- builders ------------------------------------------------------------
 
@@ -137,14 +203,15 @@ class EffectsRack(QWidget):
 
     def _build_adsr(self) -> None:
         mod = _EffectModule("ADSR Envelope")
+        self._wire_module("adsr", mod)
         self._adsr = ADSRDisplay()
         self._adsr.paramChanged.connect(lambda n, v: self.paramChanged.emit(f"adsr_{n}", v))
         mod.content_layout.addWidget(self._adsr)
 
-        a = self._reg("adsr", _make_knob("attack", 1, 5000, 50, " ms", 0))
-        d = self._reg("adsr", _make_knob("decay", 1, 5000, 150, " ms", 0))
+        a = self._reg("adsr", _make_knob("attack_ms", 1, 5000, 50, " ms", 0))
+        d = self._reg("adsr", _make_knob("decay_ms", 1, 5000, 150, " ms", 0))
         s = self._reg("adsr", _make_knob("sustain", 0, 1, 0.7, "", 2))
-        r = self._reg("adsr", _make_knob("release", 1, 5000, 300, " ms", 0))
+        r = self._reg("adsr", _make_knob("release_ms", 1, 5000, 300, " ms", 0))
         mod.content_layout.addLayout(_knob_row(a, d, s, r))
         self._layout.addWidget(mod)
 
@@ -152,6 +219,8 @@ class EffectsRack(QWidget):
 
     def _build_pitch_shift(self) -> None:
         mod = _EffectModule("Pitch Shift")
+        self._wire_module("pitch_shift", mod)
+        mod._bypass_btn.setChecked(True)
         semi = self._reg("pitch_shift", _make_knob("semitones", -24, 24, 0, " st", 1))
         mod.content_layout.addLayout(_knob_row(semi))
 
@@ -164,6 +233,8 @@ class EffectsRack(QWidget):
 
     def _build_filter(self) -> None:
         mod = _EffectModule("Filter")
+        self._wire_module("filter", mod)
+        mod._bypass_btn.setChecked(True)
 
         mode_row = QHBoxLayout()
         self._filter_mode = QComboBox()
@@ -173,25 +244,39 @@ class EffectsRack(QWidget):
 
         freq = self._reg("filter", _make_knob("frequency", 20, 20000, 1000, " Hz", 0))
         q = self._reg("filter", _make_knob("q", 0.1, 20, 1.0, "", 2))
-        gain = self._reg("filter", _make_knob("gain", -24, 24, 0, " dB", 1))
+        gain = self._reg("filter", _make_knob("gain_db", -24, 24, 0, " dB", 1))
         mod.content_layout.addLayout(_knob_row(freq, q, gain))
+        self._layout.addWidget(mod)
+
+    # --- Gain / Boost -------------------------------------------------------
+
+    def _build_gain(self) -> None:
+        mod = _EffectModule("Gain / Boost")
+        self._wire_module("gain", mod)
+        gain = self._reg("gain", _make_knob("gain_db", -24, 24, 0, " dB", 1))
+        mod.content_layout.addLayout(_knob_row(gain))
         self._layout.addWidget(mod)
 
     # --- Chorus -------------------------------------------------------------
 
     def _build_chorus(self) -> None:
         mod = _EffectModule("Chorus")
+        self._wire_module("chorus", mod)
+        mod._bypass_btn.setChecked(True)
 
         voices_row = QHBoxLayout()
         self._chorus_voices = QSpinBox()
-        self._chorus_voices.setRange(2, 8)
+        self._chorus_voices.setRange(1, 8)
         self._chorus_voices.setValue(4)
         self._chorus_voices.setPrefix("Voices: ")
+        self._chorus_voices.valueChanged.connect(
+            lambda v: self.paramChanged.emit("chorus_num_voices", float(v))
+        )
         voices_row.addWidget(self._chorus_voices)
         mod.content_layout.addLayout(voices_row)
 
-        detune = self._reg("chorus", _make_knob("detune", 0, 50, 10, " ct", 1))
-        rate = self._reg("chorus", _make_knob("rate", 0.05, 5, 0.8, " Hz", 2))
+        detune = self._reg("chorus", _make_knob("detune_cents", 0, 50, 10, " ct", 1))
+        rate = self._reg("chorus", _make_knob("rate_hz", 0.05, 5, 0.8, " Hz", 2))
         depth = self._reg("chorus", _make_knob("depth", 0, 1, 0.5))
         mix = self._reg("chorus", _make_knob("mix", 0, 1, 0.5))
         spread = self._reg("chorus", _make_knob("spread", 0, 1, 0.7))
@@ -203,8 +288,10 @@ class EffectsRack(QWidget):
 
     def _build_delay(self) -> None:
         mod = _EffectModule("Delay")
+        self._wire_module("delay", mod)
+        mod._bypass_btn.setChecked(True)
 
-        time = self._reg("delay", _make_knob("time", 1, 2000, 250, " ms", 0))
+        time = self._reg("delay", _make_knob("time_ms", 1, 2000, 250, " ms", 0))
         fb = self._reg("delay", _make_knob("feedback", 0, 0.95, 0.4))
         mix = self._reg("delay", _make_knob("mix", 0, 1, 0.3))
         mod.content_layout.addLayout(_knob_row(time, fb, mix))
@@ -217,6 +304,8 @@ class EffectsRack(QWidget):
 
     def _build_reverb(self) -> None:
         mod = _EffectModule("Reverb")
+        self._wire_module("reverb", mod)
+        mod._bypass_btn.setChecked(True)
 
         room = self._reg("reverb", _make_knob("room_size", 0, 1, 0.5))
         damp = self._reg("reverb", _make_knob("damping", 0, 1, 0.5))
@@ -228,6 +317,8 @@ class EffectsRack(QWidget):
 
     def _build_granular(self) -> None:
         mod = _EffectModule("Granular")
+        self._wire_module("granular", mod)
+        mod._bypass_btn.setChecked(True)
 
         grain = self._reg("granular", _make_knob("grain_size", 5, 500, 50, " ms", 0))
         overlap = self._reg("granular", _make_knob("overlap", 0, 1, 0.5))
@@ -243,8 +334,9 @@ class EffectsRack(QWidget):
 
     def _build_limiter(self) -> None:
         mod = _EffectModule("Limiter")
+        self._wire_module("limiter", mod)
 
-        thresh = self._reg("limiter", _make_knob("threshold", -60, 0, -1, " dB", 1))
-        rel = self._reg("limiter", _make_knob("release", 1, 1000, 100, " ms", 0))
+        thresh = self._reg("limiter", _make_knob("threshold_db", -60, 0, -1, " dB", 1))
+        rel = self._reg("limiter", _make_knob("release_ms", 1, 1000, 100, " ms", 0))
         mod.content_layout.addLayout(_knob_row(thresh, rel))
         self._layout.addWidget(mod)

@@ -99,6 +99,9 @@ class MainWindow(QMainWindow):
         self._act_new = file_menu.addAction("New Session")
         self._act_new.setShortcut(QKeySequence("Ctrl+N"))
 
+        self._act_load_session = file_menu.addAction("Load Session\u2026")
+        self._act_load_session.setShortcut(QKeySequence("Ctrl+Shift+O"))
+
         self._act_load = file_menu.addAction("Load Sample\u2026")
         self._act_load.setShortcut(QKeySequence("Ctrl+O"))
 

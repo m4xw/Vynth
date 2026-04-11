@@ -48,7 +48,7 @@ class Chorus(DSPEffect):
             left = data[:, 0]
             right = data[:, 1] if data.shape[1] > 1 else data[:, 0].copy()
 
-        num_voices = max(2, min(8, int(self._params["num_voices"])))
+        num_voices = max(1, min(8, int(self._params["num_voices"])))
         detune_cents = float(self._params["detune_cents"])
         rate = float(self._params["rate_hz"])
         depth = float(self._params["depth"])
@@ -127,6 +127,6 @@ class Chorus(DSPEffect):
         self._buf_l[:] = 0.0
         self._buf_r[:] = 0.0
         self._write_idx = 0
-        num_voices = max(2, min(8, int(self._params["num_voices"])))
+        num_voices = max(1, min(8, int(self._params["num_voices"])))
         for v in range(len(self._lfo_phases)):
             self._lfo_phases[v] = v / num_voices if v < num_voices else 0.0

@@ -16,14 +16,19 @@ class Fader(QWidget):
     _THUMB_H = 20
     _TRACK_WIDTH = 2
 
-    # dB markings for vertical mode (value, label)
+    # dB markings for vertical mode (position, label)
     _DB_MARKS: list[tuple[float, str]] = [
-        (1.0, "0"),
-        (0.75, "-6"),
-        (0.5, "-12"),
-        (0.25, "-24"),
-        (0.1, "-48"),
-        (0.0, "-∞"),
+        (50.0, "+50"),
+        (36.0, "+36"),
+        (24.0, "+24"),
+        (12.0, "+12"),
+        (6.0, "+6"),
+        (0.0, "0"),
+        (-6.0, "-6"),
+        (-12.0, "-12"),
+        (-24.0, "-24"),
+        (-48.0, "-48"),
+        (-60.0, "-∞"),
     ]
 
     def __init__(
@@ -168,7 +173,11 @@ class Fader(QWidget):
             mark_font = QFont("Segoe UI", 6)
             p.setFont(mark_font)
             p.setPen(QColor(Colors.TEXT_SECONDARY))
-            for norm_val, label in self._DB_MARKS:
+            for mark_value, label in self._DB_MARKS:
+                if mark_value < self._minimum or mark_value > self._maximum:
+                    continue
+                rng = self._maximum - self._minimum
+                norm_val = 0.0 if rng == 0 else (mark_value - self._minimum) / rng
                 my = tr.bottom() - norm_val * tr.height()
                 # small tick
                 p.drawLine(int(tr.x() - 4), int(my), int(tr.x() - 2), int(my))

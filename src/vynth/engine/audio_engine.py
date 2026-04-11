@@ -164,7 +164,8 @@ class AudioEngine(QObject):
         """Dispatch a command inside the audio callback (real-time safe)."""
         match cmd.type:
             case CommandType.NOTE_ON:
-                self._voice_allocator.note_on(cmd.note, cmd.velocity)
+                start_frame = cmd.data if isinstance(cmd.data, int) else 0
+                self._voice_allocator.note_on(cmd.note, cmd.velocity, start_frame)
             case CommandType.NOTE_OFF:
                 self._voice_allocator.note_off(cmd.note)
             case CommandType.ALL_NOTES_OFF:
@@ -189,7 +190,7 @@ class AudioEngine(QObject):
 
     # ── master volume ────────────────────────────────────────────────────
     def set_master_volume(self, vol: float) -> None:
-        self._master_volume = max(0.0, min(vol, 1.0))
+        self._master_volume = max(0.0, min(vol, float(10.0 ** (50.0 / 20.0))))
         self._settings.master_volume = self._master_volume
 
     @property

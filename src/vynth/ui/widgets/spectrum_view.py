@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QLinearGradient
-from PyQt6.QtWidgets import QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from vynth.config import SAMPLE_RATE, SPECTRUM_FFT_SIZE, UI_FPS
 from vynth.ui.theme import Colors
@@ -37,6 +37,7 @@ class SpectrumView(QWidget):
         self._peak_db: np.ndarray | None = None
         self._pending_block: np.ndarray | None = None
         self._visible = True
+        self._linear_mode = False
 
         self._setup_ui()
         self._setup_plot()
@@ -48,6 +49,30 @@ class SpectrumView(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+
+        # Toggle button bar
+        bar = QHBoxLayout()
+        bar.setContentsMargins(4, 2, 4, 0)
+        bar.addStretch()
+        self._btn_mag_toggle = QPushButton("dB")
+        self._btn_mag_toggle.setCheckable(True)
+        self._btn_mag_toggle.setChecked(False)
+        self._btn_mag_toggle.setFixedSize(40, 18)
+        self._btn_mag_toggle.setToolTip("Toggle between dB and linear magnitude")
+        self._btn_mag_toggle.setStyleSheet(
+            f"""
+            QPushButton {{
+                background: {Colors.BG_MEDIUM}; border: 1px solid {Colors.BORDER};
+                border-radius: 3px; font-size: 10px; color: {Colors.TEXT_SECONDARY};
+            }}
+            QPushButton:checked {{
+                background: {Colors.ACCENT_PRIMARY}; color: #fff;
+            }}
+            """
+        )
+        self._btn_mag_toggle.toggled.connect(self._on_mag_mode_toggled)
+        bar.addWidget(self._btn_mag_toggle)
+        layout.addLayout(bar)
 
         self._plot_widget = pg.PlotWidget()
         self._plot_widget.setBackground(Colors.WAVEFORM_BG)
@@ -143,6 +168,24 @@ class SpectrumView(QWidget):
         self._fill_curve.setData([], [])
         self._peak_curve.setData([], [])
 
+    # ── Mode toggle ───────────────────────────────────────────────────
+
+    def _on_mag_mode_toggled(self, linear: bool) -> None:
+        self._linear_mode = linear
+        self._btn_mag_toggle.setText("Lin" if linear else "dB")
+        plot = self._plot_widget.getPlotItem()
+        if linear:
+            plot.setLabel("left", "Magnitude", units="")
+            plot.setYRange(0.0, 1.0, padding=0)
+            plot.setLimits(yMin=-0.05, yMax=1.05)
+        else:
+            plot.setLabel("left", "Magnitude", units="dB")
+            plot.setYRange(self.MIN_DB, self.MAX_DB, padding=0)
+            plot.setLimits(yMin=self.MIN_DB - 5, yMax=self.MAX_DB + 5)
+        # Reset smoothed state so there's no jump artefact on switch
+        self._spectrum_db = None
+        self._peak_db = None
+
     # ── Internal ──────────────────────────────────────────────────────
 
     def _update_display(self) -> None:
@@ -187,14 +230,23 @@ class SpectrumView(QWidget):
         if len(freqs_masked) == 0:
             return
 
-        # Update curves (pyqtgraph handles log10 conversion via setLogMode)
-        self._spectrum_curve.setData(freqs_masked, db_masked)
+        if self._linear_mode:
+            # Convert smoothed dB back to linear (0–1) for display
+            lin = np.power(10.0, self._spectrum_db[mask] / 20.0)
+            peak_lin = np.power(10.0, self._peak_db[mask] / 20.0)
+            self._spectrum_curve.setData(freqs_masked, lin)
+            baseline = np.zeros_like(lin)
+            self._fill_curve.setData(freqs_masked, baseline)
+            self._peak_curve.setData(freqs_masked, peak_lin)
+        else:
+            # Update curves (pyqtgraph handles log10 conversion via setLogMode)
+            self._spectrum_curve.setData(freqs_masked, db_masked)
 
-        # Fill baseline
-        baseline = np.full_like(db_masked, self.MIN_DB)
-        self._fill_curve.setData(freqs_masked, baseline)
+            # Fill baseline
+            baseline = np.full_like(db_masked, self.MIN_DB)
+            self._fill_curve.setData(freqs_masked, baseline)
 
-        self._peak_curve.setData(freqs_masked, peak_masked)
+            self._peak_curve.setData(freqs_masked, peak_masked)
 
     def _compute_fft(self, block: np.ndarray) -> np.ndarray | None:
         """Compute windowed FFT and return magnitude in dB."""

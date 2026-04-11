@@ -143,6 +143,13 @@ class WaveformEditor(QWidget):
         """Return current loop start and end frames."""
         return (self._loop_start, self._loop_end)
 
+    def clear(self) -> None:
+        """Clear the waveform display and reset selection/loop."""
+        self._sample = None
+        self._loop_start = 0
+        self._loop_end = 0
+        self._waveform.clear()
+
     def set_loop_points(self, start: int, end: int) -> None:
         """Update loop markers."""
         self._loop_start = start

@@ -19,6 +19,8 @@ class MixerPanel(QWidget):
     """Master mixer with volume and meters."""
 
     volumeChanged = pyqtSignal(float)
+    MIN_DB = -60.0
+    MAX_DB = 50.0
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -37,8 +39,11 @@ class MixerPanel(QWidget):
 
         self._fader = Fader(
             orientation=Qt.Orientation.Vertical,
-            minimum=0.0, maximum=1.0, value=0.8,
-            default_value=0.8, show_db_scale=True,
+            minimum=self.MIN_DB,
+            maximum=self.MAX_DB,
+            value=self._linear_to_db(0.8),
+            default_value=self._linear_to_db(0.8),
+            show_db_scale=True,
         )
         self._fader.valueChanged.connect(self._on_fader)
         fader_row.addWidget(self._fader, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -87,15 +92,33 @@ class MixerPanel(QWidget):
     def set_voice_count(self, active: int, total: int = 64) -> None:
         self._voice_label.setText(f"{active}/{total} voices")
 
+    def set_volume(self, value: float) -> None:
+        """Set the fader position programmatically."""
+        self._fader.blockSignals(True)
+        self._fader.value = self._linear_to_db(value)
+        self._fader.blockSignals(False)
+        self._on_fader(self._fader.value)
+
     def set_cpu_load(self, percent: float) -> None:
         self._cpu_label.setText(f"CPU: {percent:.0f} %")
 
     # -- internals -----------------------------------------------------------
 
-    def _on_fader(self, value: float) -> None:
+    @classmethod
+    def _db_to_linear(cls, db: float) -> float:
+        if db <= cls.MIN_DB:
+            return 0.0
+        return float(math.pow(10.0, db / 20.0))
+
+    @classmethod
+    def _linear_to_db(cls, value: float) -> float:
         if value <= 0.0:
+            return cls.MIN_DB
+        return max(cls.MIN_DB, min(cls.MAX_DB, 20.0 * math.log10(value)))
+
+    def _on_fader(self, value: float) -> None:
+        if value <= self.MIN_DB:
             self._db_label.setText("−∞ dB")
         else:
-            db = 20.0 * math.log10(value)
-            self._db_label.setText(f"{db:+.1f} dB")
-        self.volumeChanged.emit(value)
+            self._db_label.setText(f"{value:+.1f} dB")
+        self.volumeChanged.emit(self._db_to_linear(value))

@@ -11,6 +11,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from vynth.config import (
+    AppConfig,
     BLOCK_SIZE,
     SAMPLE_RATE,
     SPECTRUM_FFT_SIZE,
@@ -53,6 +54,7 @@ class VynthApp:
 
         # ── settings ─────────────────────────────────────────────────────
         self._settings = SessionSettings()
+        self._app_config = AppConfig()
 
         # ── engines ──────────────────────────────────────────────────────
         self._audio_engine = AudioEngine(self._settings)
@@ -91,6 +93,10 @@ class VynthApp:
         self._wire_waveform_editor_signals()
         self._wire_menu_actions()
 
+        # Push initial bypass defaults to engine (signals fired during EffectsRack
+        # construction before wiring was connected, so they were silently dropped)
+        self._effects_rack.force_emit_all_bypass()
+
         # ── visualization timer ──────────────────────────────────────────
         interval_ms = max(1, int(1000 / UI_FPS))
         self._vis_timer = QTimer()
@@ -105,6 +111,12 @@ class VynthApp:
         # ── start engines ────────────────────────────────────────────────
         self._start_audio_engine()
         self._start_midi_engine()
+
+        # ── auto-load last session ───────────────────────────────────────
+        last = self._app_config.last_session_path
+        if last and Path(last).is_file():
+            log.info("Auto-loading last session: %s", last)
+            self._load_session_from_path(Path(last))
 
     # ── public ───────────────────────────────────────────────────────────
 
@@ -247,6 +259,7 @@ class VynthApp:
 
     def _wire_effects_signals(self) -> None:
         self._effects_rack.paramChanged.connect(self._on_effect_param_changed)
+        self._effects_rack.bypassChanged.connect(self._on_effect_bypass_changed)
 
     def _on_effect_param_changed(self, name: str, value: float) -> None:
         self._audio_engine.push_command(
@@ -254,6 +267,15 @@ class VynthApp:
                 type=CommandType.PARAM_CHANGE,
                 param_name=name,
                 param_value=value,
+            )
+        )
+
+    def _on_effect_bypass_changed(self, prefix: str, bypassed: bool) -> None:
+        self._audio_engine.push_command(
+            Command(
+                type=CommandType.PARAM_CHANGE,
+                param_name=f"{prefix}_bypass",
+                param_value=1.0 if bypassed else 0.0,
             )
         )
 
@@ -268,6 +290,22 @@ class VynthApp:
 
     def _wire_waveform_editor_signals(self) -> None:
         self._waveform_editor.editRequested.connect(self._on_edit_requested)
+        self._waveform_editor.loopPointsChanged.connect(self._on_loop_points_changed)
+
+    def _on_loop_points_changed(self, start: int, end: int) -> None:
+        sample = self._sample_manager.get_selected()
+        if sample is None:
+            return
+        if end > start > 0:
+            sample.loop.start = start
+            sample.loop.end = end
+            sample.loop.enabled = True
+        else:
+            sample.loop.enabled = False
+        # Re-push sample so the voice sees updated loop region
+        self._audio_engine.push_command(
+            Command(type=CommandType.SET_SAMPLE, data=sample)
+        )
 
     def _on_edit_requested(self, action: str) -> None:
         sample = self._sample_manager.get_selected()
@@ -337,6 +375,7 @@ class VynthApp:
         w._act_export.triggered.connect(self._on_export)
         w._act_save.triggered.connect(self._on_save_session)
         w._act_new.triggered.connect(self._on_new_session)
+        w._act_load_session.triggered.connect(self._on_load_session)
         w._act_prefs.triggered.connect(self._on_preferences)
         w._act_about.triggered.connect(self._on_about)
 
@@ -413,21 +452,36 @@ class VynthApp:
         )
         if not path:
             return
+
+        # Save embedded samples (recordings, edits) next to the session file
+        session_dir = Path(path).parent
+        samples_dir = session_dir / (Path(path).stem + "_samples")
+        sample_entries: list[dict] = []
+
+        for name in self._sample_manager.get_names():
+            s = self._sample_manager.get_sample(name)
+            if s is None:
+                continue
+            if s.file_path and Path(s.file_path).exists():
+                sample_entries.append({"path": s.file_path, "root_note": s.root_note})
+            else:
+                # Save embedded sample to disk
+                samples_dir.mkdir(parents=True, exist_ok=True)
+                safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in name)
+                wav_path = samples_dir / f"{safe}.wav"
+                s.save(wav_path)
+                sample_entries.append({"path": str(wav_path), "root_note": s.root_note})
+
         data = {
             "master_volume": self._settings.master_volume,
             "sample_rate": self._settings.sample_rate,
             "block_size": self._settings.block_size,
-            "samples": [
-                s.file_path
-                for s in (
-                    self._sample_manager.get_sample(n)
-                    for n in self._sample_manager.get_names()
-                )
-                if s is not None and s.file_path
-            ],
+            "samples": sample_entries,
+            "effects": self._effects_rack.get_all_state(),
         }
         try:
             Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+            self._app_config.last_session_path = path
             self._window.statusBar().showMessage(f"Session saved: {path}", 3000)
         except Exception:
             log.exception("Failed to save session")
@@ -435,15 +489,44 @@ class VynthApp:
                 self._window, "Save Error", f"Could not save session to:\n{path}"
             )
 
-    def _on_new_session(self) -> None:
+    def _on_load_session(self) -> None:
+        """Open a file dialog to choose and load a session file."""
         path, _ = QFileDialog.getOpenFileName(
             self._window, "Load Session", "",
             "Vynth Session (*.json);;All Files (*)",
         )
         if not path:
             return
+        self._load_session_from_path(Path(path))
+
+    def _on_new_session(self) -> None:
+        """Reset to a blank session (clear all samples and effects)."""
+        # Stop all notes
+        self._audio_engine.push_command(
+            Command(type=CommandType.ALL_NOTES_OFF)
+        )
+        # Clear engine sample
+        self._audio_engine.push_command(
+            Command(type=CommandType.SET_SAMPLE, data=None)
+        )
+        # Clear sample manager
+        for name in list(self._sample_manager.get_names()):
+            self._sample_manager.remove_sample(name)
+        # Reset effects rack to defaults
+        self._effects_rack.reset_all()
+        # Reset master volume
+        self._settings.master_volume = 0.8
+        self._audio_engine.set_master_volume(0.8)
+        self._mixer_panel.set_volume(0.8)
+        # Clear waveform
+        self._waveform_editor.clear()
+        self._window.set_sample_info("")
+        self._window.statusBar().showMessage("New session", 3000)
+
+    def _load_session_from_path(self, path: Path) -> None:
+        """Load a session from *path* (no dialog)."""
         try:
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             log.exception("Failed to read session file")
             QMessageBox.warning(
@@ -458,13 +541,40 @@ class VynthApp:
         self._audio_engine.set_master_volume(self._settings.master_volume)
 
         # Load samples
-        for sample_path in data.get("samples", []):
-            if Path(sample_path).exists():
-                try:
-                    self._sample_manager.load_sample(sample_path)
-                except Exception:
-                    log.warning("Could not reload sample: %s", sample_path)
+        last_sample_name = None
+        for entry in data.get("samples", []):
+            # Support both old format (plain string) and new format (dict)
+            if isinstance(entry, str):
+                sample_path = entry
+                root_note = 60
+            elif isinstance(entry, dict):
+                sample_path = entry.get("path", "")
+                root_note = entry.get("root_note", 60)
+            else:
+                continue
+            if not sample_path or not Path(sample_path).exists():
+                log.warning("Sample file not found: %s", sample_path)
+                continue
+            try:
+                sample = self._sample_manager.load_sample(sample_path)
+                sample.root_note = root_note
+                last_sample_name = sample.name
+            except Exception:
+                log.warning("Could not reload sample: %s", sample_path)
 
+        # Select the last loaded sample and push to engine
+        if last_sample_name:
+            self._on_sample_selected(last_sample_name)
+
+        # Restore effects state
+        effects_state = data.get("effects")
+        if effects_state:
+            self._effects_rack.set_all_state(effects_state)
+        # Force-push all bypass states to engine (Qt skips toggled() when the
+        # checked state hasn't changed vs. what set_all_state just wrote)
+        self._effects_rack.force_emit_all_bypass()
+
+        self._app_config.last_session_path = str(path)
         self._window.statusBar().showMessage(f"Session loaded: {path}", 3000)
 
     def _on_preferences(self) -> None:
@@ -496,9 +606,14 @@ class VynthApp:
         sample = self._sample_manager.get_selected()
         if sample is None:
             return
-        # Trigger middle-C note-on so the voice allocator plays the sample
+        # Use selection start if a region is selected
+        sel = self._waveform_editor.get_selection()
+        start_frame = sel[0] if sel[0] < sel[1] else 0
         self._audio_engine.push_command(
-            Command(type=CommandType.NOTE_ON, note=60, velocity=100)
+            Command(
+                type=CommandType.NOTE_ON, note=60, velocity=100,
+                data=start_frame if start_frame > 0 else None,
+            )
         )
 
     def _on_stop(self) -> None:

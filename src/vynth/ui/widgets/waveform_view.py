@@ -425,6 +425,8 @@ class WaveformView(QWidget):
         frame = int(mouse_point.x() * self._sample_rate)
         frame = max(0, min(frame, self._total_frames - 1))
         self._selection_end = frame
+        if self._selection_start is None:
+            return
         s = min(self._selection_start, self._selection_end)
         e = max(self._selection_start, self._selection_end)
         self._selection_region.setRegion([s / self._sample_rate, e / self._sample_rate])
