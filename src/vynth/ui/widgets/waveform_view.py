@@ -180,6 +180,26 @@ class WaveformView(QWidget):
         self._playback_line.setValue(t)
         self._playback_line.show()
 
+    def set_selection_region(self, start: int, end: int) -> None:
+        """Programmatically show a selection region overlay."""
+        if self._data is None:
+            return
+        s = min(start, end)
+        e = max(start, end)
+        if e - s < 1:
+            self._selection_region.hide()
+            return
+        self._selection_start = s
+        self._selection_end = e
+        self._selection_region.setRegion([s / self._sample_rate, e / self._sample_rate])
+        self._selection_region.show()
+
+    def clear_selection_region(self) -> None:
+        """Hide the selection overlay."""
+        self._selection_start = None
+        self._selection_end = None
+        self._selection_region.hide()
+
     def set_loop_points(self, start: int, end: int) -> None:
         """Draw vertical markers for loop region."""
         if self._data is None:
@@ -192,6 +212,12 @@ class WaveformView(QWidget):
         self._loop_start_line.show()
         self._loop_end_line.show()
         self._loop_region.show()
+
+    def clear_loop_points(self) -> None:
+        """Hide loop markers."""
+        self._loop_start_line.hide()
+        self._loop_end_line.hide()
+        self._loop_region.hide()
 
     def clear(self) -> None:
         """Remove waveform data and reset display."""

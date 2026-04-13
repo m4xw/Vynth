@@ -79,6 +79,7 @@ class MixerPanel(QWidget):
         self._visualizer_mode = QComboBox()
         self._visualizer_mode.addItem("Spectrum", "spectrum")
         self._visualizer_mode.addItem("Rendered", "rendered")
+        self._visualizer_mode.addItem("Live", "live")
         self._visualizer_mode.currentIndexChanged.connect(self._on_visualizer_mode_changed)
         vis_row.addWidget(self._visualizer_mode)
         layout.addLayout(vis_row)

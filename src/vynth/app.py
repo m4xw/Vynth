@@ -42,6 +42,7 @@ from vynth.ui.widgets.rendered_waveform_view import (
     RenderedWaveformProcessor,
     RenderedWaveformView,
 )
+from vynth.ui.widgets.live_waveform_view import LiveWaveformView
 from vynth.ui.widgets.spectrum_view import SpectrumView
 from vynth.ui.widgets.waveform_editor import WaveformEditor
 from vynth.utils.thread_safe_queue import Command, CommandType
@@ -84,6 +85,7 @@ class VynthApp:
         self._waveform_editor = WaveformEditor()
         self._spectrum_view = SpectrumView()
         self._rendered_waveform_view = RenderedWaveformView()
+        self._live_waveform_view = LiveWaveformView()
         self._recorder_panel = RecorderPanel()
         self._sample_browser = SampleBrowser()
         self._effects_rack = EffectsRack()
@@ -158,6 +160,7 @@ class VynthApp:
         self._visualizer_stack = QStackedWidget()
         self._visualizer_stack.addWidget(self._spectrum_view)
         self._visualizer_stack.addWidget(self._rendered_waveform_view)
+        self._visualizer_stack.addWidget(self._live_waveform_view)
         splitter.replaceWidget(1, self._visualizer_stack)
         self._set_visualizer_mode("spectrum")
 
@@ -357,6 +360,10 @@ class VynthApp:
     def _wire_waveform_editor_signals(self) -> None:
         self._waveform_editor.editRequested.connect(self._on_edit_requested)
         self._waveform_editor.loopPointsChanged.connect(self._on_loop_points_changed)
+        self._waveform_editor.selectionChanged.connect(self._on_selection_changed)
+
+    def _on_selection_changed(self, start: int, end: int) -> None:
+        self._invalidate_rendered_waveform()
 
     def _on_loop_points_changed(self, start: int, end: int) -> None:
         sample = self._sample_manager.get_selected()
@@ -372,6 +379,7 @@ class VynthApp:
         self._audio_engine.push_command(
             Command(type=CommandType.SET_SAMPLE, data=sample)
         )
+        self._invalidate_rendered_waveform()
 
     def _on_edit_requested(self, action: str) -> None:
         sample = self._sample_manager.get_selected()
@@ -437,15 +445,24 @@ class VynthApp:
                 self._spectrum_view.push_audio_block(mono)
             return
 
+        if self._visualizer_mode == "live":
+            buf = self._audio_engine.read_visualization_buffer()
+            if buf is not None and buf.size > 0:
+                self._live_waveform_view.push_audio(buf)
+                self._live_waveform_view.update_display()
+            return
+
         self._update_rendered_waveform_if_needed()
 
     def _set_visualizer_mode(self, mode: str) -> None:
-        target = "rendered" if mode == "rendered" else "spectrum"
+        target = mode if mode in ("spectrum", "rendered", "live") else "spectrum"
         self._visualizer_mode = target
         self._mixer_panel.set_visualizer_mode(target)
         if target == "rendered":
             self._visualizer_stack.setCurrentWidget(self._rendered_waveform_view)
             self._invalidate_rendered_waveform()
+        elif target == "live":
+            self._visualizer_stack.setCurrentWidget(self._live_waveform_view)
         else:
             self._visualizer_stack.setCurrentWidget(self._spectrum_view)
 
@@ -471,6 +488,19 @@ class VynthApp:
             RenderContext(params=self._effect_params, bypass=self._effect_bypass),
         )
         self._rendered_waveform_view.set_rendered_data(rendered, sample.sample_rate)
+
+        # Carry over selection and loop from the editor
+        sel = self._waveform_editor.get_selection()
+        if sel[1] > sel[0]:
+            self._rendered_waveform_view.set_selection(sel[0], sel[1])
+        else:
+            self._rendered_waveform_view.clear_selection()
+
+        loop_start, loop_end = self._waveform_editor.get_loop_points()
+        if loop_end > loop_start > 0:
+            self._rendered_waveform_view.set_loop_points(loop_start, loop_end)
+        else:
+            self._rendered_waveform_view.clear_loop_points()
 
         if self._effect_bypass.get("filter", False):
             self._rendered_waveform_view.clear_filter_overlay()
@@ -662,6 +692,7 @@ class VynthApp:
         # Clear waveform
         self._waveform_editor.clear()
         self._rendered_waveform_view.clear()
+        self._live_waveform_view.clear()
         self._current_sample = None
         self._window.set_sample_info("")
         self._invalidate_rendered_waveform()

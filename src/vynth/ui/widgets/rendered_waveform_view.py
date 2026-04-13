@@ -108,6 +108,20 @@ class RenderedWaveformView(QWidget):
     def clear(self) -> None:
         self._waveform.clear()
 
+    def set_selection(self, start: int, end: int) -> None:
+        """Show selection region on the rendered waveform."""
+        self._waveform.set_selection_region(start, end)
+
+    def clear_selection(self) -> None:
+        self._waveform.clear_selection_region()
+
+    def set_loop_points(self, start: int, end: int) -> None:
+        """Show loop markers on the rendered waveform."""
+        self._waveform.set_loop_points(start, end)
+
+    def clear_loop_points(self) -> None:
+        self._waveform.clear_loop_points()
+
     def set_filter_overlay(self, frequency_hz: float, q: float, mode: int, gain_db: float) -> None:
         self._waveform.set_filter_overlay(frequency_hz, q, mode, gain_db)
 

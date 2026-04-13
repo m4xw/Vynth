@@ -215,6 +215,13 @@ class AudioEngine(QObject):
         """Read the most recent *n_frames* from the ring buffer (UI thread)."""
         return self._vis_buffer.peek(n_frames)
 
+    def read_visualization_buffer(self) -> np.ndarray:
+        """Consume all available frames from the ring buffer (UI thread)."""
+        available = self._vis_buffer.available_read()
+        if available == 0:
+            return np.zeros((0, CHANNELS), dtype=np.float32)
+        return self._vis_buffer.read(available)
+
     @property
     def active_voice_count(self) -> int:
         return self._voice_allocator.active_voice_count
