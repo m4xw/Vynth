@@ -30,6 +30,7 @@ class Sample:
     file_path: str = ""
     note_range: tuple[int, int] = (0, 127)
     velocity_range: tuple[int, int] = (0, 127)
+    selection_range: tuple[int, int] = (0, 0)
 
     @property
     def length(self) -> int:

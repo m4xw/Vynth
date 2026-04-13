@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from vynth.config import MAX_VOICES, SAMPLE_RATE
+from vynth.config import MAX_VOICES, SAMPLE_RATE, VOICE_STOP_LAST_ON_RETRIGGER_DEFAULT
 from vynth.dsp.chorus import Chorus
 from vynth.dsp.delay import Delay
 from vynth.dsp.gain import GainEffect
@@ -27,6 +27,7 @@ class VoiceAllocator:
         self._sample_rate = sample_rate
         self.voices: list[Voice] = [Voice(i, sample_rate) for i in range(MAX_VOICES)]
         self._current_sample: Sample | None = None
+        self._stop_last_on_retrigger: bool = VOICE_STOP_LAST_ON_RETRIGGER_DEFAULT
 
         # Master DSP chain
         self._gain = GainEffect(sample_rate)
@@ -47,6 +48,9 @@ class VoiceAllocator:
         """Allocate a voice for *note* (steal the oldest if all are busy)."""
         if self._current_sample is None:
             return
+
+        if self._stop_last_on_retrigger:
+            self._stop_active_voices_for_note(note)
 
         voice = self._find_free_voice()
         if voice is None:
@@ -103,6 +107,12 @@ class VoiceAllocator:
         """Return the voice that has been active the longest."""
         return min(self.voices, key=lambda v: v.start_time)
 
+    def _stop_active_voices_for_note(self, note: int) -> None:
+        """Immediately stop active voices that are already playing *note*."""
+        for voice in self.voices:
+            if voice.is_active and voice.note == note:
+                voice.reset()
+
     # ── Parameters ───────────────────────────────────────────────────────
 
     def set_param(self, name: str, value: float) -> None:
@@ -146,6 +156,8 @@ class VoiceAllocator:
                 self.set_slice_region(int(value), self.voices[0]._slice_region_end)
             elif param == "region_end":
                 self.set_slice_region(self.voices[0]._slice_region_start, int(value))
+        elif name == "voice_stop_last_on_retrigger":
+            self._stop_last_on_retrigger = value >= 0.5
 
     def get_param(self, name: str) -> float:
         """Read back a parameter value."""
@@ -163,6 +175,8 @@ class VoiceAllocator:
             return self._reverb.get_param(name[7:])
         if name.startswith("limiter_"):
             return self._limiter.get_param(name[8:])
+        if name == "voice_stop_last_on_retrigger":
+            return 1.0 if self._stop_last_on_retrigger else 0.0
         return 0.0
 
     # ── Bypass control ─────────────────────────────────────────────────────

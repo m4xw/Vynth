@@ -10,6 +10,7 @@ from vynth.config import (
     CHANNELS,
     SessionSettings,
     AppConfig,
+    default_midi_controller_profile,
 )
 
 
@@ -85,3 +86,23 @@ class TestAppConfig:
     def test_last_session_path_default(self):
         c = AppConfig()
         assert isinstance(c.last_session_path, str)
+
+    def test_midi_controller_profile_default(self):
+        c = AppConfig()
+        profile = c.midi_controller_profile
+        assert isinstance(profile, dict)
+        assert "mappings" in profile
+
+    def test_midi_controller_profile_roundtrip(self, tmp_path, monkeypatch):
+        path = tmp_path / "vynth_app_config.json"
+        monkeypatch.setattr(AppConfig, "_resolve_path", staticmethod(lambda: path))
+
+        c = AppConfig()
+        profile = default_midi_controller_profile()
+        profile["name"] = "Test Profile"
+        c.midi_controller_profile = profile
+
+        c2 = AppConfig()
+        loaded = c2.midi_controller_profile
+        assert loaded["name"] == "Test Profile"
+        assert isinstance(loaded.get("mappings"), list)

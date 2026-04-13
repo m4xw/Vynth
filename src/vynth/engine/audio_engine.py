@@ -181,7 +181,10 @@ class AudioEngine(QObject):
             case CommandType.ALL_NOTES_OFF:
                 self._voice_allocator.all_notes_off()
             case CommandType.PARAM_CHANGE:
-                self._voice_allocator.set_param(cmd.param_name, cmd.param_value)
+                if cmd.param_name == "master_volume":
+                    self.set_master_volume(cmd.param_value)
+                else:
+                    self._voice_allocator.set_param(cmd.param_name, cmd.param_value)
             case CommandType.SET_SAMPLE:
                 self._voice_allocator.set_sample(cmd.data)
             case CommandType.PITCH_BEND:

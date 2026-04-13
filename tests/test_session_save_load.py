@@ -92,6 +92,39 @@ class TestSessionEffectsState:
         assert loaded["effects"]["bypass"]["reverb"] is True
 
 
+class TestSessionMidiControllerProfile:
+    def test_midi_controller_profile_persisted(self, tmp_path):
+        data = {
+            "samples": [],
+            "effects": {},
+            "midi_controller_profile": {
+                "name": "My MPK Profile",
+                "mappings": [
+                    {
+                        "enabled": True,
+                        "input": "cc",
+                        "number": 74,
+                        "channel": "all",
+                        "trigger": "change",
+                        "mode": "absolute",
+                        "target_type": "param",
+                        "target": "filter_frequency",
+                        "min": 200.0,
+                        "max": 12000.0,
+                    }
+                ],
+            },
+        }
+        path = tmp_path / "session.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        profile = loaded.get("midi_controller_profile", {})
+        assert profile.get("name") == "My MPK Profile"
+        assert isinstance(profile.get("mappings"), list)
+        assert profile["mappings"][0]["target"] == "filter_frequency"
+
+
 class TestSessionMasterVolume:
     @pytest.mark.parametrize("vol", [0.0, 0.5, 0.8, 1.0])
     def test_volume_roundtrip(self, tmp_path, vol):
@@ -132,6 +165,50 @@ class TestSessionSamplePaths:
         path.write_text(json.dumps(session), encoding="utf-8")
         loaded = json.loads(path.read_text(encoding="utf-8"))
         assert loaded["samples"][0] == wav_path
+
+
+class TestSessionSampleMetadata:
+    def test_sample_metadata_fields_persisted(self, tmp_path):
+        session = {
+            "samples": [
+                {
+                    "path": "C:/audio/piano.wav",
+                    "name": "Piano",
+                    "root_note": 57,
+                    "note_range": [36, 84],
+                    "velocity_range": [1, 120],
+                    "loop": {
+                        "start": 120,
+                        "end": 2048,
+                        "crossfade": 128,
+                        "enabled": True,
+                    },
+                    "selected": True,
+                    "selection": {"start": 200, "end": 900},
+                    "index": 0,
+                }
+            ],
+            "selected_sample_index": 0,
+            "selected_sample_name": "Piano",
+            "waveform_selection": {"start": 200, "end": 900},
+            "runtime": {
+                "octave_shift": 1,
+                "controller": {"division": 0.25, "swing": 0.1},
+            },
+            "effects": {},
+        }
+        path = tmp_path / "session.json"
+        path.write_text(json.dumps(session), encoding="utf-8")
+
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        sample0 = loaded["samples"][0]
+        assert sample0["name"] == "Piano"
+        assert sample0["loop"]["enabled"] is True
+        assert sample0["note_range"] == [36, 84]
+        assert sample0["selection"] == {"start": 200, "end": 900}
+        assert loaded["selected_sample_index"] == 0
+        assert loaded["waveform_selection"]["end"] == 900
+        assert loaded["runtime"]["octave_shift"] == 1
 
 
 class TestSessionEdgeCases:

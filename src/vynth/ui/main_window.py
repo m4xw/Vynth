@@ -126,6 +126,7 @@ class MainWindow(QMainWindow):
 
         edit_menu.addSeparator()
         self._act_prefs = edit_menu.addAction("Preferences\u2026")
+        self._act_midi_controller = edit_menu.addAction("MIDI Controller Editor\u2026")
 
         # View — populated after dock widgets exist
         self._view_menu = menu_bar.addMenu("&View")

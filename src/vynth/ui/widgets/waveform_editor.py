@@ -139,6 +139,20 @@ class WaveformEditor(QWidget):
             return (0, 0)
         return sel
 
+    def set_selection(self, start: int, end: int) -> None:
+        """Programmatically set the current selection."""
+        self._waveform.set_selection_region(start, end)
+        s = min(start, end)
+        e = max(start, end)
+        self.selectionChanged.emit(s, e)
+        self._update_info()
+
+    def clear_selection(self) -> None:
+        """Clear the current selection."""
+        self._waveform.clear_selection_region()
+        self.selectionChanged.emit(0, 0)
+        self._update_info()
+
     def get_loop_points(self) -> tuple[int, int]:
         """Return current loop start and end frames."""
         return (self._loop_start, self._loop_end)
@@ -251,6 +265,9 @@ class WaveformEditor(QWidget):
             action.triggered.connect(lambda checked, n=action_name: self._handle_loop_action(n))
 
         menu.addSeparator()
+
+        reset_sel = menu.addAction("Reset Selection")
+        reset_sel.triggered.connect(self.clear_selection)
 
         zoom_sel = menu.addAction("Zoom to Selection")
         zoom_sel.triggered.connect(self._waveform.zoom_to_selection)

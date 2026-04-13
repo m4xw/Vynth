@@ -8,6 +8,11 @@ import time
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from vynth.config import MIDI_HOTPLUG_POLL_S, MIDI_POLL_INTERVAL_MS
+from vynth.engine.midi_mapping import (
+    normalize_event,
+    resolve_mapping_events,
+    sanitize_profile,
+)
 from vynth.utils.thread_safe_queue import Command, CommandQueue, CommandType
 
 log = logging.getLogger(__name__)
@@ -40,6 +45,10 @@ class MIDIEngine(QObject):
     note_off_received = pyqtSignal(int)        # note
     device_changed = pyqtSignal(str)           # port name
     devices_updated = pyqtSignal(list)         # list[str]
+    controller_cc_received = pyqtSignal(int, int, int)  # channel, cc, value
+    controller_note_received = pyqtSignal(int, int, int, bool)  # channel, note, velocity, pressed
+    mapped_action_triggered = pyqtSignal(str)  # action name
+    mapped_param_changed = pyqtSignal(str, float)  # param name, value
 
     def __init__(self, command_queue: CommandQueue) -> None:
         super().__init__()
@@ -49,6 +58,8 @@ class MIDIEngine(QObject):
         self._current_port_name: str = ""
         self._thread: threading.Thread | None = None
         self._known_devices: list[str] = []
+        self._controller_profile: dict = {"name": "Controller Profile", "mappings": []}
+        self._toggle_states: dict[str, bool] = {}
 
         self._midiin: rtmidi.MidiIn | None = None
         if _RTMIDI_AVAILABLE:
@@ -123,6 +134,15 @@ class MIDIEngine(QObject):
     def available(self) -> bool:
         return _RTMIDI_AVAILABLE
 
+    def set_controller_profile(self, profile: dict) -> None:
+        """Set active controller mapping profile."""
+        self._controller_profile = sanitize_profile(profile)
+        self._toggle_states.clear()
+
+    def get_controller_profile(self) -> dict:
+        """Return active controller mapping profile."""
+        return sanitize_profile(self._controller_profile)
+
     # ── polling loop (runs in daemon thread) ─────────────────────────────
     def _poll_loop(self) -> None:
         poll_s = MIDI_POLL_INTERVAL_MS / 1000.0
@@ -159,15 +179,28 @@ class MIDIEngine(QObject):
             if velocity == 0:
                 # Note-on with velocity 0 == note-off (common convention)
                 self.note_off_received.emit(note)
+                self.controller_note_received.emit(channel, note, 0, False)
+                self._route_controller_event(
+                    normalize_event("note", note, channel, 0, False)
+                )
             else:
                 self.note_on_received.emit(note, velocity)
+                self.controller_note_received.emit(channel, note, velocity, True)
+                self._route_controller_event(
+                    normalize_event("note", note, channel, velocity, True)
+                )
 
         elif status == _NOTE_OFF and len(data) >= 3:
-            note = data[1]
+            note, velocity = data[1], data[2]
             self.note_off_received.emit(note)
+            self.controller_note_received.emit(channel, note, velocity, False)
+            self._route_controller_event(
+                normalize_event("note", note, channel, velocity, False)
+            )
 
         elif status == _CONTROL_CHANGE and len(data) >= 3:
             cc_num, cc_val = data[1], data[2]
+            self.controller_cc_received.emit(channel, cc_num, cc_val)
             if cc_num == _CC_SUSTAIN:
                 self._command_queue.push(
                     Command(
@@ -184,6 +217,9 @@ class MIDIEngine(QObject):
                         param_value=cc_val / 127.0,
                     )
                 )
+            self._route_controller_event(
+                normalize_event("cc", cc_num, channel, cc_val, True)
+            )
 
         elif status == _PITCH_BEND and len(data) >= 3:
             # 14-bit value: LSB = data[1], MSB = data[2]
@@ -197,6 +233,34 @@ class MIDIEngine(QObject):
                     param_value=normalized,
                 )
             )
+
+    def _route_controller_event(self, event: dict) -> None:
+        mappings = self._controller_profile.get("mappings", [])
+        if not mappings:
+            return
+        resolved, self._toggle_states = resolve_mapping_events(
+            event,
+            mappings,
+            self._toggle_states,
+        )
+        for item in resolved:
+            if item.get("type") == "param":
+                target = str(item.get("target", ""))
+                value = float(item.get("value", 0.0))
+                if not target:
+                    continue
+                self.mapped_param_changed.emit(target, value)
+                self._command_queue.push(
+                    Command(
+                        type=CommandType.PARAM_CHANGE,
+                        param_name=target,
+                        param_value=value,
+                    )
+                )
+            elif item.get("type") == "action":
+                action = str(item.get("target", "")).strip()
+                if action:
+                    self.mapped_action_triggered.emit(action)
 
     # ── hotplug detection ────────────────────────────────────────────────
     def _check_device_changes(self) -> None:

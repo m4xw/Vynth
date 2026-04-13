@@ -1,6 +1,7 @@
 """Global configuration constants for Vynth."""
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ DTYPE = "float32"
 
 # ── Polyphony ────────────────────────────────────────────────────────────
 MAX_VOICES = 64
+VOICE_STOP_LAST_ON_RETRIGGER_DEFAULT = True
 
 # ── MIDI ─────────────────────────────────────────────────────────────────
 MIDI_POLL_INTERVAL_MS = 1
@@ -65,6 +67,111 @@ EXPORT_DEFAULT_SR = 48_000
 EXPORT_DEFAULT_BITS = 24
 
 
+def default_midi_controller_profile() -> dict:
+    """Return the built-in MPK Mini Plus starter mapping profile."""
+    return {
+        "name": "MPK Mini Plus Default",
+        "mappings": [
+            {
+                "enabled": True,
+                "input": "cc",
+                "number": 1,
+                "channel": "all",
+                "trigger": "change",
+                "mode": "absolute",
+                "target_type": "param",
+                "target": "mod_wheel",
+                "min": 0.0,
+                "max": 1.0,
+            },
+            {
+                "enabled": True,
+                "input": "cc",
+                "number": 74,
+                "channel": "all",
+                "trigger": "change",
+                "mode": "absolute",
+                "target_type": "param",
+                "target": "filter_frequency",
+                "min": 200.0,
+                "max": 12000.0,
+            },
+            {
+                "enabled": True,
+                "input": "cc",
+                "number": 71,
+                "channel": "all",
+                "trigger": "change",
+                "mode": "absolute",
+                "target_type": "param",
+                "target": "filter_q",
+                "min": 0.2,
+                "max": 8.0,
+            },
+            {
+                "enabled": True,
+                "input": "cc",
+                "number": 91,
+                "channel": "all",
+                "trigger": "change",
+                "mode": "absolute",
+                "target_type": "param",
+                "target": "reverb_wet",
+                "min": 0.0,
+                "max": 1.0,
+            },
+            {
+                "enabled": True,
+                "input": "cc",
+                "number": 7,
+                "channel": "all",
+                "trigger": "change",
+                "mode": "absolute",
+                "target_type": "param",
+                "target": "master_volume",
+                "min": 0.0,
+                "max": 1.0,
+            },
+            {
+                "enabled": True,
+                "input": "note",
+                "number": 36,
+                "channel": "all",
+                "trigger": "press",
+                "mode": "momentary",
+                "target_type": "action",
+                "target": "play",
+                "min": 0.0,
+                "max": 1.0,
+            },
+            {
+                "enabled": True,
+                "input": "note",
+                "number": 37,
+                "channel": "all",
+                "trigger": "press",
+                "mode": "momentary",
+                "target_type": "action",
+                "target": "stop",
+                "min": 0.0,
+                "max": 1.0,
+            },
+            {
+                "enabled": True,
+                "input": "note",
+                "number": 38,
+                "channel": "all",
+                "trigger": "press",
+                "mode": "toggle",
+                "target_type": "action",
+                "target": "record_toggle",
+                "min": 0.0,
+                "max": 1.0,
+            },
+        ],
+    }
+
+
 @dataclass
 class SessionSettings:
     """Mutable runtime settings."""
@@ -105,6 +212,20 @@ class AppConfig:
     @last_session_path.setter
     def last_session_path(self, value: str) -> None:
         self._data["last_session_path"] = value
+        self._save()
+
+    @property
+    def midi_controller_profile(self) -> dict:
+        profile = self._data.get("midi_controller_profile")
+        if isinstance(profile, dict):
+            return copy.deepcopy(profile)
+        return default_midi_controller_profile()
+
+    @midi_controller_profile.setter
+    def midi_controller_profile(self, value: dict) -> None:
+        if not isinstance(value, dict):
+            return
+        self._data["midi_controller_profile"] = copy.deepcopy(value)
         self._save()
 
     # ── internals ────────────────────────────────────────────

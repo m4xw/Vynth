@@ -195,6 +195,13 @@ class EffectsRack(QWidget):
         for prefix, mod in self._modules.items():
             self.bypassChanged.emit(prefix, mod._bypass_btn.isChecked())
 
+    def set_bypass(self, prefix: str, bypassed: bool) -> None:
+        """Set bypass UI state for a module by prefix."""
+        mod = self._modules.get(prefix)
+        if mod is None:
+            return
+        mod._bypass_btn.setChecked(bypassed)
+
     # -- internal helpers ----------------------------------------------------
 
     def _wire_module(self, prefix: str, mod: _EffectModule) -> None:

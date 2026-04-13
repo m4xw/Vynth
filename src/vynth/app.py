@@ -18,16 +18,18 @@ from vynth.config import (
     SPECTRUM_FFT_SIZE,
     UI_FPS,
     SessionSettings,
+    default_midi_controller_profile,
 )
 from vynth.engine.audio_engine import AudioEngine
 from vynth.engine.export import Exporter
 from vynth.engine.midi_engine import MIDIEngine
 from vynth.engine.recorder import Recorder
 from vynth.engine.voice import PlaybackMode
-from vynth.sampler.sample import Sample
+from vynth.sampler.sample import LoopRegion, Sample
 from vynth.sampler.sample_editor import SampleEditor
 from vynth.sampler.sample_manager import SampleManager
 from vynth.ui.dialogs.about_dialog import AboutDialog
+from vynth.ui.dialogs.midi_controller_dialog import MIDIControllerDialog
 from vynth.ui.dialogs.settings_dialog import SettingsDialog
 from vynth.ui.main_window import MainWindow
 from vynth.ui.panels.effects_rack import EffectsRack
@@ -50,6 +52,16 @@ from vynth.utils.thread_safe_queue import Command, CommandType
 log = logging.getLogger(__name__)
 
 _SESSION_FILE = "vynth_session.json"
+_CONTROLLER_RUNTIME_TARGETS = {
+    "division",
+    "swing",
+    "mode",
+    "octave",
+    "latch",
+    "sync",
+    "gate",
+    "gpm",
+}
 
 
 class VynthApp:
@@ -67,6 +79,10 @@ class VynthApp:
         # ── engines ──────────────────────────────────────────────────────
         self._audio_engine = AudioEngine(self._settings)
         self._midi_engine = MIDIEngine(self._audio_engine.command_queue)
+        self._midi_controller_profile = self._app_config.midi_controller_profile
+        if not self._midi_controller_profile:
+            self._midi_controller_profile = default_midi_controller_profile()
+        self._midi_engine.set_controller_profile(self._midi_controller_profile)
         self._recorder = Recorder(sample_rate=self._settings.sample_rate)
         self._sample_manager = SampleManager()
         self._sample_editor = SampleEditor()
@@ -98,6 +114,17 @@ class VynthApp:
         self._render_invalidated = True
         self._render_invalidate_ts = 0.0
         self._render_debounce_s = 0.06
+        self._controller_runtime: dict[str, float] = {
+            "division": 0.25,
+            "swing": 0.0,
+            "mode": 0.0,
+            "octave": 0.0,
+            "latch": 0.0,
+            "sync": 0.0,
+            "gate": 0.5,
+            "gpm": 120.0,
+        }
+        self._octave_shift = 0
 
         fx_state = self._effects_rack.get_all_state()
         self._effect_params: dict[str, float] = {
@@ -183,6 +210,8 @@ class VynthApp:
             )
         )
         self._midi_engine.devices_updated.connect(self._on_midi_devices_updated)
+        self._midi_engine.mapped_action_triggered.connect(self._on_mapped_action)
+        self._midi_engine.mapped_param_changed.connect(self._on_mapped_param_changed)
 
         # MIDI keyboard mouse clicks → audio engine
         self._midi_keyboard.notePressed.connect(self._on_midi_note_on)
@@ -194,24 +223,26 @@ class VynthApp:
         )
 
     def _on_midi_note_on(self, note: int, velocity: int) -> None:
+        shifted_note = max(0, min(127, note + (self._octave_shift * 12)))
         self._sync_playback_slice_state()
         start_frame, end_frame = self._resolve_note_region()
         self._audio_engine.push_command(
             Command(
                 type=CommandType.NOTE_ON,
-                note=note,
+                note=shifted_note,
                 velocity=velocity,
                 data=(start_frame, end_frame),
             )
         )
-        self._midi_keyboard.highlight_note(note, velocity)
+        self._midi_keyboard.highlight_note(shifted_note, velocity)
         self._window.flash_midi_activity()
 
     def _on_midi_note_off(self, note: int) -> None:
+        shifted_note = max(0, min(127, note + (self._octave_shift * 12)))
         self._audio_engine.push_command(
-            Command(type=CommandType.NOTE_OFF, note=note)
+            Command(type=CommandType.NOTE_OFF, note=shifted_note)
         )
-        self._midi_keyboard.release_note(note)
+        self._midi_keyboard.release_note(shifted_note)
 
     def _on_midi_device_selected(self, index: int) -> None:
         if index <= 0:
@@ -291,6 +322,11 @@ class VynthApp:
         )
         # Update UI
         self._waveform_editor.set_sample(sample)
+        sel_start, sel_end = sample.selection_range
+        if sel_end > sel_start:
+            self._waveform_editor.set_selection(sel_start, sel_end)
+        else:
+            self._waveform_editor.clear_selection()
         self._push_slice_region_params()
         self._invalidate_rendered_waveform()
         self._window.set_sample_info(
@@ -362,10 +398,12 @@ class VynthApp:
     # ── Mixer → Engine ───────────────────────────────────────────────────
 
     def _wire_mixer_signals(self) -> None:
-        self._mixer_panel.volumeChanged.connect(
-            self._audio_engine.set_master_volume
-        )
+        self._mixer_panel.volumeChanged.connect(self._on_master_volume_changed)
         self._mixer_panel.visualizerModeChanged.connect(self._set_visualizer_mode)
+
+    def _on_master_volume_changed(self, value: float) -> None:
+        self._settings.master_volume = float(value)
+        self._audio_engine.set_master_volume(float(value))
 
     # ── Waveform Editor → Sample Editor ──────────────────────────────────
 
@@ -375,6 +413,9 @@ class VynthApp:
         self._waveform_editor.selectionChanged.connect(self._on_selection_changed)
 
     def _on_selection_changed(self, start: int, end: int) -> None:
+        sample = self._sample_manager.get_selected()
+        if sample is not None:
+            sample.selection_range = (int(start), int(end))
         self._push_slice_region_params()
         self._invalidate_rendered_waveform()
 
@@ -553,6 +594,7 @@ class VynthApp:
         w._act_new.triggered.connect(self._on_new_session)
         w._act_load_session.triggered.connect(self._on_load_session)
         w._act_prefs.triggered.connect(self._on_preferences)
+        w._act_midi_controller.triggered.connect(self._on_midi_controller_editor)
         w._act_about.triggered.connect(self._on_about)
 
         # Toolbar transport — toggle the record button which emits recordToggled
@@ -639,31 +681,77 @@ class VynthApp:
         if not path:
             return
 
-        # Save embedded samples (recordings, edits) next to the session file
+        # Save embedded samples (recordings, edits) next to the session file.
+        # Also persist per-sample playback metadata needed for faithful restore.
         session_dir = Path(path).parent
         samples_dir = session_dir / (Path(path).stem + "_samples")
         sample_entries: list[dict] = []
+        sample_names = self._sample_manager.get_names()
+        selected_name = self._sample_manager.get_selected().name if self._sample_manager.get_selected() else None
 
-        for name in self._sample_manager.get_names():
+        sel_start, sel_end = self._waveform_editor.get_selection()
+        selection_data = None
+        if sel_end > sel_start:
+            selection_data = {"start": int(sel_start), "end": int(sel_end)}
+
+        for idx, name in enumerate(sample_names):
             s = self._sample_manager.get_sample(name)
             if s is None:
                 continue
             if s.file_path and Path(s.file_path).exists():
-                sample_entries.append({"path": s.file_path, "root_note": s.root_note})
+                sample_path = s.file_path
             else:
                 # Save embedded sample to disk
                 samples_dir.mkdir(parents=True, exist_ok=True)
                 safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in name)
                 wav_path = samples_dir / f"{safe}.wav"
                 s.save(wav_path)
-                sample_entries.append({"path": str(wav_path), "root_note": s.root_note})
+                sample_path = str(wav_path)
+
+            sample_entries.append(
+                {
+                    "path": sample_path,
+                    "name": s.name,
+                    "root_note": int(s.root_note),
+                    "note_range": [int(s.note_range[0]), int(s.note_range[1])],
+                    "velocity_range": [int(s.velocity_range[0]), int(s.velocity_range[1])],
+                    "loop": {
+                        "start": int(s.loop.start),
+                        "end": int(s.loop.end),
+                        "crossfade": int(s.loop.crossfade),
+                        "enabled": bool(s.loop.enabled),
+                    },
+                    "selected": bool(name == selected_name),
+                    "selection": selection_data if name == selected_name else None,
+                    "index": idx,
+                }
+            )
+            sample_sel_start, sample_sel_end = s.selection_range
+            if sample_sel_end > sample_sel_start:
+                sample_entries[-1]["selection"] = {
+                    "start": int(sample_sel_start),
+                    "end": int(sample_sel_end),
+                }
+
+        selected_index = next(
+            (i for i, n in enumerate(sample_names) if n == selected_name),
+            -1,
+        )
 
         data = {
-            "master_volume": self._settings.master_volume,
+            "master_volume": float(self._audio_engine.master_volume),
             "sample_rate": self._settings.sample_rate,
             "block_size": self._settings.block_size,
             "samples": sample_entries,
             "effects": self._effects_rack.get_all_state(),
+            "midi_controller_profile": self._midi_controller_profile,
+            "selected_sample_index": selected_index,
+            "selected_sample_name": selected_name,
+            "waveform_selection": selection_data,
+            "runtime": {
+                "octave_shift": int(self._octave_shift),
+                "controller": {k: float(v) for k, v in self._controller_runtime.items()},
+            },
         }
         try:
             Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -726,22 +814,46 @@ class VynthApp:
             )
             return
 
+        # Reset current in-memory state so load is deterministic.
+        self._on_new_session()
+
         # Apply settings
         self._settings.master_volume = data.get(
             "master_volume", self._settings.master_volume
         )
         self._audio_engine.set_master_volume(self._settings.master_volume)
+        self._mixer_panel.set_volume(self._settings.master_volume)
 
         # Load samples
-        last_sample_name = None
+        loaded_names: list[str] = []
+        selected_name_saved = data.get("selected_sample_name")
+        selected_index_saved = int(data.get("selected_sample_index", -1))
+        selection_saved = data.get("waveform_selection")
+
         for entry in data.get("samples", []):
             # Support both old format (plain string) and new format (dict)
             if isinstance(entry, str):
                 sample_path = entry
                 root_note = 60
+                note_range = (0, 127)
+                velocity_range = (0, 127)
+                loop_data = None
+                sample_selection = None
             elif isinstance(entry, dict):
                 sample_path = entry.get("path", "")
                 root_note = entry.get("root_note", 60)
+                note_range_raw = entry.get("note_range", [0, 127])
+                velocity_range_raw = entry.get("velocity_range", [0, 127])
+                if isinstance(note_range_raw, (list, tuple)) and len(note_range_raw) == 2:
+                    note_range = (int(note_range_raw[0]), int(note_range_raw[1]))
+                else:
+                    note_range = (0, 127)
+                if isinstance(velocity_range_raw, (list, tuple)) and len(velocity_range_raw) == 2:
+                    velocity_range = (int(velocity_range_raw[0]), int(velocity_range_raw[1]))
+                else:
+                    velocity_range = (0, 127)
+                loop_data = entry.get("loop")
+                sample_selection = entry.get("selection")
             else:
                 continue
             if not sample_path or not Path(sample_path).exists():
@@ -750,13 +862,59 @@ class VynthApp:
             try:
                 sample = self._sample_manager.load_sample(sample_path)
                 sample.root_note = root_note
-                last_sample_name = sample.name
+                sample.note_range = note_range
+                sample.velocity_range = velocity_range
+
+                if isinstance(loop_data, dict):
+                    ls = int(loop_data.get("start", 0))
+                    le = int(loop_data.get("end", 0))
+                    lc = int(loop_data.get("crossfade", 256))
+                    enabled = bool(loop_data.get("enabled", False))
+                    sample.loop = LoopRegion(start=ls, end=le, crossfade=lc, enabled=enabled)
+
+                if isinstance(sample_selection, dict):
+                    ss = int(sample_selection.get("start", 0))
+                    se = int(sample_selection.get("end", 0))
+                    sample.selection_range = (ss, se)
+
+                loaded_names.append(sample.name)
             except Exception:
                 log.warning("Could not reload sample: %s", sample_path)
 
-        # Select the last loaded sample and push to engine
-        if last_sample_name:
-            self._on_sample_selected(last_sample_name)
+        # Select the saved sample if possible, otherwise keep backward-compatible behavior.
+        selected_name = None
+        if selected_name_saved in loaded_names:
+            selected_name = selected_name_saved
+        elif 0 <= selected_index_saved < len(loaded_names):
+            selected_name = loaded_names[selected_index_saved]
+        elif loaded_names:
+            selected_name = loaded_names[-1]
+
+        if selected_name:
+            self._on_sample_selected(selected_name)
+
+        # Restore waveform selection if present.
+        if isinstance(selection_saved, dict):
+            s = int(selection_saved.get("start", 0))
+            e = int(selection_saved.get("end", 0))
+            if e > s and self._current_sample is not None:
+                s = max(0, min(s, self._current_sample.length))
+                e = max(0, min(e, self._current_sample.length))
+                self._waveform_editor.set_selection(s, e)
+                self._current_sample.selection_range = (s, e)
+            else:
+                self._waveform_editor.clear_selection()
+        else:
+            if self._current_sample is not None:
+                ss, se = self._current_sample.selection_range
+                if se > ss:
+                    ss = max(0, min(ss, self._current_sample.length))
+                    se = max(0, min(se, self._current_sample.length))
+                    self._waveform_editor.set_selection(ss, se)
+                else:
+                    self._waveform_editor.clear_selection()
+            else:
+                self._waveform_editor.clear_selection()
 
         # Restore effects state
         effects_state = data.get("effects")
@@ -773,6 +931,26 @@ class VynthApp:
         # checked state hasn't changed vs. what set_all_state just wrote)
         self._effects_rack.force_emit_all_bypass()
         self._sync_playback_slice_state()
+
+        # Restore MIDI controller profile if embedded in session
+        profile = data.get("midi_controller_profile")
+        if isinstance(profile, dict):
+            self._midi_controller_profile = profile
+            self._midi_engine.set_controller_profile(profile)
+            self._app_config.midi_controller_profile = profile
+
+        # Restore runtime controller state.
+        runtime = data.get("runtime")
+        if isinstance(runtime, dict):
+            self._octave_shift = int(runtime.get("octave_shift", self._octave_shift))
+            controller = runtime.get("controller")
+            if isinstance(controller, dict):
+                for key in _CONTROLLER_RUNTIME_TARGETS:
+                    if key in controller:
+                        self._controller_runtime[key] = float(controller[key])
+
+        self._push_slice_region_params()
+        self._invalidate_rendered_waveform()
 
         self._app_config.last_session_path = str(path)
         self._window.statusBar().showMessage(f"Session loaded: {path}", 3000)
@@ -798,6 +976,65 @@ class VynthApp:
             # Restart audio engine with new settings
             self._audio_engine.stop()
             self._start_audio_engine()
+
+    def _on_midi_controller_editor(self) -> None:
+        dlg = MIDIControllerDialog(self._midi_controller_profile, self._window)
+        self._midi_engine.controller_cc_received.connect(dlg.on_midi_cc)
+        self._midi_engine.controller_note_received.connect(dlg.on_midi_note)
+        try:
+            if dlg.exec() != MIDIControllerDialog.DialogCode.Accepted:
+                return
+            profile = dlg.get_profile()
+            self._midi_controller_profile = profile
+            self._midi_engine.set_controller_profile(profile)
+            self._app_config.midi_controller_profile = profile
+            self._window.statusBar().showMessage("MIDI controller profile updated", 3000)
+        finally:
+            self._midi_engine.controller_cc_received.disconnect(dlg.on_midi_cc)
+            self._midi_engine.controller_note_received.disconnect(dlg.on_midi_note)
+
+    def _on_mapped_action(self, action: str) -> None:
+        if action == "play":
+            self._on_play_sample()
+        elif action == "stop":
+            self._on_stop()
+        elif action == "record_toggle":
+            self._recorder_panel._rec_btn.toggle()
+        elif action == "save_session":
+            self._on_save_session()
+        elif action == "export":
+            self._on_export()
+        elif action == "load_sample":
+            self._on_load_sample()
+        elif action == "new_session":
+            self._on_new_session()
+
+    def _on_mapped_param_changed(self, name: str, value: float) -> None:
+        """Mirror mapped MIDI parameter changes in the visible UI controls."""
+        if name in _CONTROLLER_RUNTIME_TARGETS:
+            self._controller_runtime[name] = value
+            if name == "mode":
+                idx = max(0, min(2, int(round(value))))
+                self._effects_rack.playback_mode_index = idx
+            elif name == "octave":
+                self._octave_shift = max(-4, min(4, int(round(value))))
+            return
+
+        if name == "master_volume":
+            self._mixer_panel.set_volume(value)
+            self._settings.master_volume = value
+            return
+
+        if name.endswith("_bypass"):
+            prefix = name[:-7]
+            self._effect_bypass[prefix] = value >= 0.5
+            self._effects_rack.set_bypass(prefix, value >= 0.5)
+            self._invalidate_rendered_waveform()
+            return
+
+        self._effects_rack.set_param(name, value)
+        self._effect_params[name] = value
+        self._invalidate_rendered_waveform()
 
     def _on_about(self) -> None:
         AboutDialog(self._window).exec()

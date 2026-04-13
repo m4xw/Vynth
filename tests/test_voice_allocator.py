@@ -23,6 +23,7 @@ def va():
 @pytest.fixture
 def va_with_sample(va):
     va.set_sample(_make_sample())
+    va.set_param("voice_stop_last_on_retrigger", 0.0)
     return va
 
 
@@ -50,6 +51,37 @@ class TestVoiceAllocatorNoteOn:
     def test_note_on_without_sample_ignored(self, va):
         va.note_on(60, 100)
         assert va.active_voice_count == 0
+
+
+class TestVoiceAllocatorRetriggerStopLast:
+    def test_default_enabled(self, va):
+        assert va.get_param("voice_stop_last_on_retrigger") == pytest.approx(1.0)
+
+    def test_retrigger_same_note_stops_previous_by_default(self, va):
+        va.set_sample(_make_sample())
+        va.note_on(60, 100)
+        assert any(v.is_active and v.note == 60 for v in va.voices)
+
+        va.note_on(60, 100)
+
+        assert va.active_voice_count == 1
+        assert sum(1 for v in va.voices if v.is_active and v.note == 60) == 1
+
+    def test_new_note_keeps_existing_note_for_chords_by_default(self, va):
+        va.set_sample(_make_sample())
+        va.note_on(60, 100)
+        va.note_on(64, 100)
+
+        assert va.active_voice_count == 2
+        assert sum(1 for v in va.voices if v.is_active and v.note == 60) == 1
+        assert sum(1 for v in va.voices if v.is_active and v.note == 64) == 1
+
+    def test_can_disable_stop_last_behavior(self, va):
+        va.set_sample(_make_sample())
+        va.set_param("voice_stop_last_on_retrigger", 0.0)
+        va.note_on(60, 100)
+        va.note_on(64, 100)
+        assert va.active_voice_count == 2
 
 
 class TestVoiceAllocatorNoteOff:
