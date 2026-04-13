@@ -13,6 +13,21 @@ class SampleEditor:
     """Operations on Sample objects — all return new Sample instances."""
 
     @staticmethod
+    def _resolve_region(
+        sample: Sample,
+        start_frame: int | None,
+        end_frame: int | None,
+    ) -> tuple[int, int]:
+        if start_frame is None or end_frame is None:
+            return (0, sample.length)
+
+        start = max(0, int(start_frame))
+        end = min(sample.length, int(end_frame))
+        if start >= end:
+            raise ValueError("start_frame must be less than end_frame.")
+        return (start, end)
+
+    @staticmethod
     def trim(sample: Sample, start_frame: int, end_frame: int) -> Sample:
         """Return a new Sample trimmed to [start_frame, end_frame)."""
         start_frame = max(0, start_frame)
@@ -23,47 +38,74 @@ class SampleEditor:
         return Sample.from_buffer(data, sample.sample_rate, sample.name)
 
     @staticmethod
-    def normalize(sample: Sample, peak: float = 0.95) -> Sample:
-        """Return a peak-normalized copy."""
-        data = normalize(sample.data, peak)
+    def normalize(
+        sample: Sample,
+        peak: float = 0.95,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+    ) -> Sample:
+        """Return a copy with peak-normalized region (or whole sample)."""
+        start, end = SampleEditor._resolve_region(sample, start_frame, end_frame)
+        data = sample.data.copy()
+        data[start:end] = normalize(data[start:end], peak)
         return Sample.from_buffer(data, sample.sample_rate, sample.name)
 
     @staticmethod
-    def reverse(sample: Sample) -> Sample:
-        """Return a time-reversed copy."""
-        data = sample.data[::-1].copy()
+    def reverse(
+        sample: Sample,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+    ) -> Sample:
+        """Return a copy with reversed region (or whole sample)."""
+        start, end = SampleEditor._resolve_region(sample, start_frame, end_frame)
+        data = sample.data.copy()
+        data[start:end] = data[start:end][::-1]
         return Sample.from_buffer(data, sample.sample_rate, sample.name)
 
     @staticmethod
-    def fade_in(sample: Sample, duration_ms: float) -> Sample:
-        """Apply a linear fade-in."""
+    def fade_in(
+        sample: Sample,
+        duration_ms: float,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+    ) -> Sample:
+        """Apply a linear fade-in to region start (or whole sample)."""
+        start, end = SampleEditor._resolve_region(sample, start_frame, end_frame)
+        region_len = end - start
         n_frames = int(sample.sample_rate * duration_ms / 1000.0)
-        n_frames = min(n_frames, sample.length)
+        n_frames = min(n_frames, region_len)
         if n_frames <= 0:
             return Sample.from_buffer(sample.data.copy(), sample.sample_rate, sample.name)
 
         data = sample.data.copy()
         ramp = np.linspace(0.0, 1.0, n_frames, dtype=np.float32)
         if data.ndim == 1:
-            data[:n_frames] *= ramp
+            data[start:start + n_frames] *= ramp
         else:
-            data[:n_frames] *= ramp[:, None]
+            data[start:start + n_frames] *= ramp[:, None]
         return Sample.from_buffer(data, sample.sample_rate, sample.name)
 
     @staticmethod
-    def fade_out(sample: Sample, duration_ms: float) -> Sample:
-        """Apply a linear fade-out."""
+    def fade_out(
+        sample: Sample,
+        duration_ms: float,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+    ) -> Sample:
+        """Apply a linear fade-out to region end (or whole sample)."""
+        start, end = SampleEditor._resolve_region(sample, start_frame, end_frame)
+        region_len = end - start
         n_frames = int(sample.sample_rate * duration_ms / 1000.0)
-        n_frames = min(n_frames, sample.length)
+        n_frames = min(n_frames, region_len)
         if n_frames <= 0:
             return Sample.from_buffer(sample.data.copy(), sample.sample_rate, sample.name)
 
         data = sample.data.copy()
         ramp = np.linspace(1.0, 0.0, n_frames, dtype=np.float32)
         if data.ndim == 1:
-            data[-n_frames:] *= ramp
+            data[end - n_frames:end] *= ramp
         else:
-            data[-n_frames:] *= ramp[:, None]
+            data[end - n_frames:end] *= ramp[:, None]
         return Sample.from_buffer(data, sample.sample_rate, sample.name)
 
     @staticmethod

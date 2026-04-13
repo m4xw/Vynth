@@ -113,6 +113,23 @@ class TestRenderContextBypass:
         assert not np.any(np.isnan(out))
 
 
+class TestRenderSelection:
+    def test_effects_apply_to_selection_only(self, processor):
+        sig = _sine(duration_s=0.2)
+        start, end = 2000, 6000
+        ctx = RenderContext(
+            params={"gain_gain_db": 12.0},
+            bypass={"chorus": True, "delay": True, "reverb": True, "limiter": True, "filter": True},
+            selection=(start, end),
+        )
+        out = processor.render(sig, 48000, ctx)
+
+        expected = np.column_stack([sig, sig]).astype(np.float32)
+        np.testing.assert_allclose(out[:start], expected[:start], atol=1e-5)
+        np.testing.assert_allclose(out[end:], expected[end:], atol=1e-5)
+        assert np.mean(np.abs(out[start:end])) > np.mean(np.abs(expected[start:end]))
+
+
 class TestRenderContext:
     def test_dataclass_slots(self):
         ctx = RenderContext(params={"a": 1.0}, bypass={"b": True})

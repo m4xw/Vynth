@@ -74,6 +74,14 @@ class TestNormalize:
         normalized = SampleEditor.normalize(s)
         assert normalized.data.shape == s.data.shape
 
+    def test_normalize_selection_only(self):
+        s = _make_sample(duration_s=0.2)
+        start, end = 1000, 3000
+        normalized = SampleEditor.normalize(s, start_frame=start, end_frame=end)
+        np.testing.assert_allclose(normalized.data[:start], s.data[:start], atol=1e-6)
+        np.testing.assert_allclose(normalized.data[end:], s.data[end:], atol=1e-6)
+        assert np.max(np.abs(normalized.data[start:end])) == pytest.approx(0.95, abs=0.01)
+
 
 class TestReverse:
     def test_reverse_basic(self):
@@ -90,6 +98,14 @@ class TestReverse:
         s = _make_sample()
         rev = SampleEditor.reverse(s)
         assert rev.length == s.length
+
+    def test_reverse_selection_only(self):
+        s = _make_sample(duration_s=0.2)
+        start, end = 900, 2400
+        rev = SampleEditor.reverse(s, start_frame=start, end_frame=end)
+        np.testing.assert_allclose(rev.data[:start], s.data[:start], atol=1e-7)
+        np.testing.assert_allclose(rev.data[end:], s.data[end:], atol=1e-7)
+        np.testing.assert_allclose(rev.data[start:end], s.data[start:end][::-1], atol=1e-7)
 
 
 class TestFadeIn:
@@ -115,6 +131,14 @@ class TestFadeIn:
         assert abs(faded.data[0, 0]) < 0.01
         assert abs(faded.data[0, 1]) < 0.01
 
+    def test_fade_in_selection_only(self):
+        s = _make_sample(duration_s=0.3)
+        start, end = 2000, 5000
+        faded = SampleEditor.fade_in(s, 20.0, start_frame=start, end_frame=end)
+        np.testing.assert_allclose(faded.data[:start], s.data[:start], atol=1e-6)
+        np.testing.assert_allclose(faded.data[end:], s.data[end:], atol=1e-6)
+        assert abs(faded.data[start]) <= abs(s.data[start])
+
 
 class TestFadeOut:
     def test_fade_out_ends_zero(self):
@@ -131,6 +155,14 @@ class TestFadeOut:
         s = _make_sample()
         faded = SampleEditor.fade_out(s, 0.0)
         np.testing.assert_allclose(faded.data, s.data, atol=1e-6)
+
+    def test_fade_out_selection_only(self):
+        s = _make_sample(duration_s=0.3)
+        start, end = 2000, 5000
+        faded = SampleEditor.fade_out(s, 20.0, start_frame=start, end_frame=end)
+        np.testing.assert_allclose(faded.data[:start], s.data[:start], atol=1e-6)
+        np.testing.assert_allclose(faded.data[end:], s.data[end:], atol=1e-6)
+        assert abs(faded.data[end - 1]) <= abs(s.data[end - 1])
 
 
 class TestSetLoopPoints:

@@ -217,8 +217,8 @@ class VynthApp:
         self._midi_engine.mapped_param_changed.connect(self._on_mapped_param_changed)
 
         # MIDI keyboard mouse clicks → audio engine
-        self._midi_keyboard.notePressed.connect(self._on_midi_note_on)
-        self._midi_keyboard.noteReleased.connect(self._on_midi_note_off)
+        self._midi_keyboard.notePressed.connect(self._on_ui_keyboard_note_on)
+        self._midi_keyboard.noteReleased.connect(self._on_ui_keyboard_note_off)
 
         # Toolbar MIDI device combo
         self._window._combo_midi.currentIndexChanged.connect(
@@ -246,6 +246,28 @@ class VynthApp:
             Command(type=CommandType.NOTE_OFF, note=shifted_note)
         )
         self._midi_keyboard.release_note(shifted_note)
+
+    def _on_ui_keyboard_note_on(self, note: int, velocity: int) -> None:
+        """Handle on-screen keyboard note-on without octave shifting."""
+        raw_note = max(0, min(127, note))
+        self._sync_playback_slice_state()
+        start_frame, end_frame = self._resolve_note_region()
+        self._audio_engine.push_command(
+            Command(
+                type=CommandType.NOTE_ON,
+                note=raw_note,
+                velocity=velocity,
+                data=(start_frame, end_frame),
+            )
+        )
+        self._window.flash_midi_activity()
+
+    def _on_ui_keyboard_note_off(self, note: int) -> None:
+        """Handle on-screen keyboard note-off without octave shifting."""
+        raw_note = max(0, min(127, note))
+        self._audio_engine.push_command(
+            Command(type=CommandType.NOTE_OFF, note=raw_note)
+        )
 
     def _on_midi_device_selected(self, index: int) -> None:
         if index <= 0:
@@ -548,21 +570,41 @@ class VynthApp:
         if sample is None:
             return
 
+        sel_start, sel_end = self._waveform_editor.get_selection()
+        has_selection = sel_end > sel_start
+
         try:
             match action:
                 case "trim":
-                    start, end = self._waveform_editor.get_selection()
-                    if start >= end:
+                    if not has_selection:
                         return
-                    new_sample = self._sample_editor.trim(sample, start, end)
+                    new_sample = self._sample_editor.trim(sample, sel_start, sel_end)
                 case "normalize":
-                    new_sample = self._sample_editor.normalize(sample)
+                    new_sample = self._sample_editor.normalize(
+                        sample,
+                        start_frame=sel_start if has_selection else None,
+                        end_frame=sel_end if has_selection else None,
+                    )
                 case "reverse":
-                    new_sample = self._sample_editor.reverse(sample)
+                    new_sample = self._sample_editor.reverse(
+                        sample,
+                        start_frame=sel_start if has_selection else None,
+                        end_frame=sel_end if has_selection else None,
+                    )
                 case "fade_in":
-                    new_sample = self._sample_editor.fade_in(sample, 50.0)
+                    new_sample = self._sample_editor.fade_in(
+                        sample,
+                        50.0,
+                        start_frame=sel_start if has_selection else None,
+                        end_frame=sel_end if has_selection else None,
+                    )
                 case "fade_out":
-                    new_sample = self._sample_editor.fade_out(sample, 50.0)
+                    new_sample = self._sample_editor.fade_out(
+                        sample,
+                        50.0,
+                        start_frame=sel_start if has_selection else None,
+                        end_frame=sel_end if has_selection else None,
+                    )
                 case _:
                     log.warning("Unknown edit action: %s", action)
                     return
@@ -579,7 +621,16 @@ class VynthApp:
         self._sample_manager.add_sample(new_sample)
         self._sample_manager.select_sample(new_sample.name)
         self._current_sample = new_sample
+
+        if action != "trim" and has_selection:
+            new_sample.selection_range = (int(sel_start), int(sel_end))
+
         self._waveform_editor.set_sample(new_sample)
+        if action != "trim" and has_selection:
+            self._waveform_editor.set_selection(sel_start, sel_end)
+        else:
+            self._waveform_editor.clear_selection()
+
         self._audio_engine.push_command(
             Command(type=CommandType.SET_SAMPLE, data=new_sample)
         )
@@ -646,15 +697,20 @@ class VynthApp:
             self._render_invalidated = False
             return
 
+        sel = self._waveform_editor.get_selection()
+
         rendered = self._render_processor.render(
             sample.data,
             sample.sample_rate,
-            RenderContext(params=self._effect_params, bypass=self._effect_bypass),
+            RenderContext(
+                params=self._effect_params,
+                bypass=self._effect_bypass,
+                selection=sel if sel[1] > sel[0] else None,
+            ),
         )
         self._rendered_waveform_view.set_rendered_data(rendered, sample.sample_rate)
 
         # Carry over selection and loop from the editor
-        sel = self._waveform_editor.get_selection()
         if sel[1] > sel[0]:
             self._rendered_waveform_view.set_selection(sel[0], sel[1])
         else:
@@ -688,6 +744,7 @@ class VynthApp:
                     "filter_gain_db",
                     self._audio_engine.voice_allocator.get_param("filter_gain_db"),
                 ),
+                scope_frames=sel if sel[1] > sel[0] else None,
             )
 
         self._render_invalidated = False

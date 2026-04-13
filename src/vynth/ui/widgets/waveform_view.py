@@ -33,6 +33,7 @@ class WaveformView(QWidget):
         self._filter_q = 0.707
         self._filter_mode = 0
         self._filter_gain_db = 0.0
+        self._filter_scope_frames: tuple[int, int] | None = None
 
         self._setup_ui()
         self._setup_plot()
@@ -277,6 +278,7 @@ class WaveformView(QWidget):
         q: float,
         mode: int,
         gain_db: float = 0.0,
+        scope_frames: tuple[int, int] | None = None,
     ) -> None:
         """Show/update filter markers on top of the waveform."""
         self._filter_overlay_active = True
@@ -284,11 +286,13 @@ class WaveformView(QWidget):
         self._filter_q = float(max(0.1, q))
         self._filter_mode = int(mode)
         self._filter_gain_db = float(gain_db)
+        self._filter_scope_frames = scope_frames
         self._update_filter_overlay()
 
     def clear_filter_overlay(self) -> None:
         """Hide filter overlays."""
         self._filter_overlay_active = False
+        self._filter_scope_frames = None
         self._filter_cutoff_line.hide()
         self._filter_q_region.hide()
         self._filter_info.hide()
@@ -513,19 +517,28 @@ class WaveformView(QWidget):
             self._filter_info.hide()
             return
 
-        def map_freq_to_time(freq_hz: float, duration: float) -> float:
+        def map_freq_to_time(freq_hz: float, x_start: float, x_end: float) -> float:
             f = float(np.clip(freq_hz, 20.0, 20_000.0))
             norm = (np.log10(f) - np.log10(20.0)) / (np.log10(20_000.0) - np.log10(20.0))
-            return norm * duration
+            return x_start + norm * (x_end - x_start)
 
         duration = self._total_frames / float(self._sample_rate)
-        cutoff_x = map_freq_to_time(self._filter_freq_hz, duration)
+        x_start = 0.0
+        x_end = duration
+        if self._filter_scope_frames is not None:
+            s = max(0, min(int(self._filter_scope_frames[0]), self._total_frames))
+            e = max(0, min(int(self._filter_scope_frames[1]), self._total_frames))
+            if e > s:
+                x_start = s / float(self._sample_rate)
+                x_end = e / float(self._sample_rate)
+
+        cutoff_x = map_freq_to_time(self._filter_freq_hz, x_start, x_end)
 
         bandwidth = self._filter_freq_hz / self._filter_q
         low_hz = max(20.0, self._filter_freq_hz - (bandwidth * 0.5))
         high_hz = min(20_000.0, self._filter_freq_hz + (bandwidth * 0.5))
-        low_x = map_freq_to_time(low_hz, duration)
-        high_x = map_freq_to_time(high_hz, duration)
+        low_x = map_freq_to_time(low_hz, x_start, x_end)
+        high_x = map_freq_to_time(high_hz, x_start, x_end)
         if high_x - low_x < 1e-4:
             high_x = low_x + 1e-4
 

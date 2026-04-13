@@ -22,6 +22,7 @@ class RenderContext:
 
     params: dict[str, float]
     bypass: dict[str, bool]
+    selection: tuple[int, int] | None = None
 
 
 class RenderedWaveformProcessor:
@@ -32,12 +33,34 @@ class RenderedWaveformProcessor:
             return np.zeros((0, 2), dtype=np.float32)
 
         stereo = self._to_stereo(data)
+        start, end = self._resolve_selection(stereo.shape[0], ctx.selection)
 
         # Approximate the audible chain for visualization with deterministic state.
-        stereo = self._apply_filter(stereo, sample_rate, ctx)
-        stereo = self._apply_master_effects(stereo, sample_rate, ctx)
+        if start == 0 and end == stereo.shape[0]:
+            out = self._apply_filter(stereo, sample_rate, ctx)
+            out = self._apply_master_effects(out, sample_rate, ctx)
+        else:
+            out = stereo.copy()
+            selected = out[start:end]
+            selected = self._apply_filter(selected, sample_rate, ctx)
+            selected = self._apply_master_effects(selected, sample_rate, ctx)
+            out[start:end] = selected
 
-        return np.clip(stereo, -1.0, 1.0).astype(np.float32)
+        return np.clip(out, -1.0, 1.0).astype(np.float32)
+
+    @staticmethod
+    def _resolve_selection(
+        length: int,
+        selection: tuple[int, int] | None,
+    ) -> tuple[int, int]:
+        if selection is None:
+            return (0, length)
+
+        start = max(0, min(int(selection[0]), length))
+        end = max(0, min(int(selection[1]), length))
+        if end <= start:
+            return (0, length)
+        return (start, end)
 
     @staticmethod
     def _to_stereo(data: np.ndarray) -> np.ndarray:
@@ -122,8 +145,21 @@ class RenderedWaveformView(QWidget):
     def clear_loop_points(self) -> None:
         self._waveform.clear_loop_points()
 
-    def set_filter_overlay(self, frequency_hz: float, q: float, mode: int, gain_db: float) -> None:
-        self._waveform.set_filter_overlay(frequency_hz, q, mode, gain_db)
+    def set_filter_overlay(
+        self,
+        frequency_hz: float,
+        q: float,
+        mode: int,
+        gain_db: float,
+        scope_frames: tuple[int, int] | None = None,
+    ) -> None:
+        self._waveform.set_filter_overlay(
+            frequency_hz,
+            q,
+            mode,
+            gain_db,
+            scope_frames=scope_frames,
+        )
 
     def clear_filter_overlay(self) -> None:
         self._waveform.clear_filter_overlay()
