@@ -55,6 +55,7 @@ class MIDIEngine(QObject):
         self._command_queue = command_queue
         self._running = False
         self._current_port: int | None = None
+        self._channel_filter: int | None = None
         self._current_port_name: str = ""
         self._thread: threading.Thread | None = None
         self._known_devices: list[str] = []
@@ -134,6 +135,18 @@ class MIDIEngine(QObject):
     def available(self) -> bool:
         return _RTMIDI_AVAILABLE
 
+    def set_channel_filter(self, channel: int | None) -> None:
+        """Set MIDI channel filter (0..15) or None for all channels."""
+        if channel is None:
+            self._channel_filter = None
+            return
+        if 0 <= channel < 16:
+            self._channel_filter = int(channel)
+
+    @property
+    def channel_filter(self) -> int | None:
+        return self._channel_filter
+
     def set_controller_profile(self, profile: dict) -> None:
         """Set active controller mapping profile."""
         self._controller_profile = sanitize_profile(profile)
@@ -173,6 +186,8 @@ class MIDIEngine(QObject):
 
         status = data[0] & 0xF0
         channel = data[0] & 0x0F
+        if self._channel_filter is not None and channel != self._channel_filter:
+            return
 
         if status == _NOTE_ON and len(data) >= 3:
             note, velocity = data[1], data[2]

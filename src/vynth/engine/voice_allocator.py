@@ -132,6 +132,15 @@ class VoiceAllocator:
             param = name[5:]
             for v in self.voices:
                 v._adsr.set_param(param, value)
+        elif name.startswith("pitch_shift_"):
+            param = name[12:]
+            if param == "semitones":
+                for v in self.voices:
+                    v._pitch_shifter.set_param("shift_semitones", value)
+            elif param == "preserve_formant":
+                preserve = value >= 0.5
+                for v in self.voices:
+                    v._formant.bypassed = not preserve
         elif name.startswith("filter_"):
             param = name[7:]
             for v in self.voices:
@@ -163,6 +172,13 @@ class VoiceAllocator:
         """Read back a parameter value."""
         if name.startswith("adsr_"):
             return self.voices[0]._adsr.get_param(name[5:])
+        if name.startswith("pitch_shift_"):
+            param = name[12:]
+            if param == "semitones":
+                return self.voices[0]._pitch_shifter.get_param("shift_semitones")
+            if param == "preserve_formant":
+                return 0.0 if self.voices[0]._formant.bypassed else 1.0
+            return 0.0
         if name.startswith("filter_"):
             return self.voices[0]._filter.get_param(name[7:])
         if name.startswith("gain_"):

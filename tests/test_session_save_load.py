@@ -23,6 +23,7 @@ class TestSessionDataStructure:
             "master_volume": 0.75,
             "sample_rate": 48000,
             "block_size": 512,
+            "visualizer_mode": "rendered",
             "samples": [],
             "effects": {"params": {}, "bypass": {}},
         }
@@ -32,6 +33,7 @@ class TestSessionDataStructure:
         assert loaded["master_volume"] == 0.75
         assert loaded["sample_rate"] == 48000
         assert loaded["block_size"] == 512
+        assert loaded["visualizer_mode"] == "rendered"
         assert isinstance(loaded["samples"], list)
         assert isinstance(loaded["effects"], dict)
 

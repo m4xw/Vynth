@@ -65,6 +65,13 @@ class Recorder(QObject):
             return
         self._device = device_id
 
+    def set_sample_rate(self, sample_rate: int) -> None:
+        """Update the recording sample rate while idle."""
+        if self._recording:
+            logger.warning("Cannot change sample rate while recording.")
+            return
+        self._sample_rate = int(sample_rate)
+
     # ── Recording ────────────────────────────────────────────────────────
 
     def start_recording(self, device: int | None = None,

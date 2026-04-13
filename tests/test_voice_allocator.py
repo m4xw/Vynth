@@ -163,6 +163,20 @@ class TestVoiceAllocatorParams:
         va_with_sample.set_param("filter_frequency", 2000.0)
         assert va_with_sample.get_param("filter_frequency") == pytest.approx(2000.0)
 
+    def test_set_filter_mode_param(self, va_with_sample):
+        va_with_sample.set_param("filter_mode", 2.0)
+        assert va_with_sample.get_param("filter_mode") == pytest.approx(2.0)
+
+    def test_set_pitch_shift_param(self, va_with_sample):
+        va_with_sample.set_param("pitch_shift_semitones", 7.0)
+        assert va_with_sample.get_param("pitch_shift_semitones") == pytest.approx(7.0)
+
+    def test_set_pitch_shift_formant_toggle(self, va_with_sample):
+        va_with_sample.set_param("pitch_shift_preserve_formant", 1.0)
+        assert va_with_sample.get_param("pitch_shift_preserve_formant") == pytest.approx(1.0)
+        va_with_sample.set_param("pitch_shift_preserve_formant", 0.0)
+        assert va_with_sample.get_param("pitch_shift_preserve_formant") == pytest.approx(0.0)
+
     def test_set_chorus_param(self, va_with_sample):
         va_with_sample.set_param("chorus_rate", 3.0)
         assert va_with_sample.get_param("chorus_rate") == pytest.approx(3.0)
@@ -170,6 +184,10 @@ class TestVoiceAllocatorParams:
     def test_set_delay_param(self, va_with_sample):
         va_with_sample.set_param("delay_time_ms", 500.0)
         assert va_with_sample.get_param("delay_time_ms") == pytest.approx(500.0)
+
+    def test_set_delay_ping_pong_param(self, va_with_sample):
+        va_with_sample.set_param("delay_ping_pong", 1.0)
+        assert va_with_sample.get_param("delay_ping_pong") == pytest.approx(1.0)
 
     def test_set_reverb_param(self, va_with_sample):
         va_with_sample.set_param("reverb_room_size", 0.8)

@@ -52,6 +52,7 @@ from vynth.utils.thread_safe_queue import Command, CommandType
 log = logging.getLogger(__name__)
 
 _SESSION_FILE = "vynth_session.json"
+_KEEP_AUDIO_DEVICE = object()
 _CONTROLLER_RUNTIME_TARGETS = {
     "division",
     "swing",
@@ -75,6 +76,9 @@ class VynthApp:
         # ── settings ─────────────────────────────────────────────────────
         self._settings = SessionSettings()
         self._app_config = AppConfig()
+        self._restore_audio_settings()
+        self._restore_midi_settings()
+        self._visualizer_mode = self._restore_visualizer_mode()
 
         # ── engines ──────────────────────────────────────────────────────
         self._audio_engine = AudioEngine(self._settings)
@@ -108,7 +112,6 @@ class VynthApp:
         self._mixer_panel = MixerPanel()
         self._midi_keyboard = MIDIKeyboardWidget()
 
-        self._visualizer_mode = "spectrum"
         self._current_sample: Sample | None = None
         self._render_processor = RenderedWaveformProcessor()
         self._render_invalidated = True
@@ -190,7 +193,7 @@ class VynthApp:
         self._visualizer_stack.addWidget(self._rendered_waveform_view)
         self._visualizer_stack.addWidget(self._live_waveform_view)
         splitter.replaceWidget(1, self._visualizer_stack)
-        self._set_visualizer_mode("spectrum")
+        self._set_visualizer_mode(self._visualizer_mode)
 
         # Docks
         self._window.dock_sample_browser.setWidget(self._sample_browser)
@@ -247,21 +250,125 @@ class VynthApp:
     def _on_midi_device_selected(self, index: int) -> None:
         if index <= 0:
             self._midi_engine.close_device()
+            self._settings.midi_device = None
+            self._persist_midi_settings()
             return
         # index 0 is the "(No MIDI device)" placeholder
-        self._midi_engine.open_device(index - 1)
+        midi_device = index - 1
+        self._midi_engine.open_device(midi_device)
+        self._settings.midi_device = midi_device
+        self._persist_midi_settings()
 
     def _on_midi_devices_updated(self, devices: list[str]) -> None:
         combo = self._window._combo_midi
-        current = combo.currentText()
         combo.blockSignals(True)
         combo.clear()
         combo.addItem("(No MIDI device)")
         combo.addItems(devices)
-        # Restore previous selection if still available
-        idx = combo.findText(current)
-        combo.setCurrentIndex(max(0, idx))
+
+        if self._settings.midi_device is None:
+            combo.setCurrentIndex(0)
+        elif 0 <= self._settings.midi_device < len(devices):
+            combo.setCurrentIndex(self._settings.midi_device + 1)
+        else:
+            combo.setCurrentIndex(0)
+            self._settings.midi_device = None
+            self._persist_midi_settings()
+
         combo.blockSignals(False)
+
+    def _restore_audio_settings(self) -> None:
+        audio_settings = self._app_config.audio_settings
+
+        sample_rate = audio_settings.get("sample_rate")
+        if isinstance(sample_rate, int) and sample_rate > 0:
+            self._settings.sample_rate = sample_rate
+
+        block_size = audio_settings.get("block_size")
+        if isinstance(block_size, int) and block_size > 0:
+            self._settings.block_size = block_size
+
+        audio_device = audio_settings.get("audio_device")
+        if isinstance(audio_device, int):
+            try:
+                if 0 <= audio_device < len(AudioEngine.device_list()):
+                    self._settings.audio_device = audio_device
+            except Exception:
+                log.warning("Could not validate persisted audio device")
+
+    def _persist_audio_settings(self) -> None:
+        self._app_config.audio_settings = {
+            "sample_rate": int(self._settings.sample_rate),
+            "block_size": int(self._settings.block_size),
+            "audio_device": self._settings.audio_device,
+        }
+
+    def _restore_midi_settings(self) -> None:
+        midi_settings = self._app_config.midi_settings
+        midi_device = midi_settings.get("midi_device")
+        if isinstance(midi_device, int) and midi_device >= 0:
+            self._settings.midi_device = midi_device
+        midi_channel = midi_settings.get("midi_channel")
+        if isinstance(midi_channel, int) and 0 <= midi_channel < 16:
+            self._settings.midi_channel = midi_channel
+
+    def _persist_midi_settings(self) -> None:
+        self._app_config.midi_settings = {
+            "midi_device": self._settings.midi_device,
+            "midi_channel": self._settings.midi_channel,
+        }
+
+    def _restore_visualizer_mode(self) -> str:
+        ui_settings = self._app_config.ui_settings
+        visualizer_mode = ui_settings.get("visualizer_mode")
+        if visualizer_mode in {"spectrum", "rendered", "live"}:
+            return visualizer_mode
+        return "spectrum"
+
+    def _persist_visualizer_mode(self) -> None:
+        self._app_config.ui_settings = {
+            "visualizer_mode": self._visualizer_mode,
+        }
+
+    def _apply_audio_settings(
+        self,
+        *,
+        sample_rate: int | None = None,
+        block_size: int | None = None,
+        audio_device: object = _KEEP_AUDIO_DEVICE,
+        persist: bool = True,
+    ) -> None:
+        target_sample_rate = self._settings.sample_rate if sample_rate is None else int(sample_rate)
+        target_block_size = self._settings.block_size if block_size is None else int(block_size)
+        target_audio_device = (
+            self._settings.audio_device
+            if audio_device is _KEEP_AUDIO_DEVICE
+            else audio_device
+        )
+
+        changed = (
+            target_sample_rate != self._settings.sample_rate
+            or target_block_size != self._settings.block_size
+            or target_audio_device != self._settings.audio_device
+        )
+
+        if changed:
+            was_running = self._audio_engine.is_running
+            if was_running:
+                self._audio_engine.stop()
+
+            self._settings.sample_rate = target_sample_rate
+            self._settings.block_size = target_block_size
+            self._settings.audio_device = target_audio_device
+            self._recorder.set_sample_rate(target_sample_rate)
+
+            if was_running:
+                self._start_audio_engine()
+
+            self._populate_audio_devices()
+
+        if persist:
+            self._persist_audio_settings()
 
     # ── Recorder → UI ────────────────────────────────────────────────────
 
@@ -513,6 +620,7 @@ class VynthApp:
     def _set_visualizer_mode(self, mode: str) -> None:
         target = mode if mode in ("spectrum", "rendered", "live") else "spectrum"
         self._visualizer_mode = target
+        self._persist_visualizer_mode()
         self._mixer_panel.set_visualizer_mode(target)
         if target == "rendered":
             self._visualizer_stack.setCurrentWidget(self._rendered_waveform_view)
@@ -742,6 +850,7 @@ class VynthApp:
             "master_volume": float(self._audio_engine.master_volume),
             "sample_rate": self._settings.sample_rate,
             "block_size": self._settings.block_size,
+            "visualizer_mode": self._visualizer_mode,
             "samples": sample_entries,
             "effects": self._effects_rack.get_all_state(),
             "midi_controller_profile": self._midi_controller_profile,
@@ -816,6 +925,12 @@ class VynthApp:
 
         # Reset current in-memory state so load is deterministic.
         self._on_new_session()
+
+        self._apply_audio_settings(
+            sample_rate=int(data.get("sample_rate", self._settings.sample_rate)),
+            block_size=int(data.get("block_size", self._settings.block_size)),
+        )
+        self._set_visualizer_mode(data.get("visualizer_mode", self._visualizer_mode))
 
         # Apply settings
         self._settings.master_volume = data.get(
@@ -960,22 +1075,65 @@ class VynthApp:
         # Populate device lists
         audio_devs = [d["name"] for d in AudioEngine.device_list()]
         dlg.set_audio_devices(audio_devs)
+        dlg.set_audio_settings(
+            sample_rate=self._settings.sample_rate,
+            buffer_size=self._settings.block_size,
+            output_device=self._settings.audio_device,
+        )
         midi_devs = self._midi_engine.get_devices()
         dlg.set_midi_devices(midi_devs)
+        dlg.set_midi_settings(
+            midi_device=self._settings.midi_device,
+            midi_channel=self._settings.midi_channel,
+        )
+
+        def apply_settings(cfg: dict) -> None:
+            new_sr = int(cfg.get("sample_rate", self._settings.sample_rate))
+            new_bs = int(cfg.get("buffer_size", self._settings.block_size))
+
+            output_idx = int(cfg.get("output_device_index", 0))
+            new_audio_device = None if output_idx <= 0 else output_idx - 1
+
+            self._apply_audio_settings(
+                sample_rate=new_sr,
+                block_size=new_bs,
+                audio_device=new_audio_device,
+            )
+
+            midi_idx = int(cfg.get("midi_device_index", 0))
+            new_midi_device = None if midi_idx <= 0 else midi_idx - 1
+            if new_midi_device is None:
+                self._on_midi_device_selected(0)
+            elif new_midi_device != self._settings.midi_device:
+                self._on_midi_device_selected(new_midi_device + 1)
+
+            midi_channel_idx = int(cfg.get("midi_channel_index", 0))
+            self._settings.midi_channel = None if midi_channel_idx <= 0 else midi_channel_idx - 1
+            self._midi_engine.set_channel_filter(self._settings.midi_channel)
+            self._persist_midi_settings()
+
+        def refresh_devices() -> None:
+            refreshed_audio_devs = [d["name"] for d in AudioEngine.device_list()]
+            refreshed_midi_devs = self._midi_engine.get_devices()
+            dlg.set_audio_devices(refreshed_audio_devs)
+            dlg.set_midi_devices(refreshed_midi_devs)
+            dlg.set_audio_settings(
+                sample_rate=self._settings.sample_rate,
+                buffer_size=self._settings.block_size,
+                output_device=self._settings.audio_device,
+            )
+            dlg.set_midi_settings(
+                midi_device=self._settings.midi_device,
+                midi_channel=self._settings.midi_channel,
+            )
+
+        dlg.applyRequested.connect(apply_settings)
+        dlg.refreshRequested.connect(refresh_devices)
 
         if dlg.exec() != SettingsDialog.DialogCode.Accepted:
             return
 
-        cfg = dlg.get_settings()
-        # Apply audio settings
-        new_sr = cfg.get("sample_rate", self._settings.sample_rate)
-        new_bs = cfg.get("buffer_size", self._settings.block_size)
-        if new_sr != self._settings.sample_rate or new_bs != self._settings.block_size:
-            self._settings.sample_rate = new_sr
-            self._settings.block_size = new_bs
-            # Restart audio engine with new settings
-            self._audio_engine.stop()
-            self._start_audio_engine()
+        apply_settings(dlg.get_settings())
 
     def _on_midi_controller_editor(self) -> None:
         dlg = MIDIControllerDialog(self._midi_controller_profile, self._window)
@@ -1047,6 +1205,9 @@ class VynthApp:
 
         preview_note = int(sample.root_note)
         start_frame, end_frame = self._resolve_note_region()
+        self._audio_engine.push_command(
+            Command(type=CommandType.NOTE_OFF, note=preview_note)
+        )
         self._audio_engine.push_command(
             Command(
                 type=CommandType.NOTE_ON, note=preview_note, velocity=100,
@@ -1140,6 +1301,13 @@ class VynthApp:
                 combo.addItem(dev["name"])
         except Exception:
             log.warning("Could not enumerate audio devices")
+
+        if self._settings.audio_device is None:
+            combo.setCurrentIndex(0)
+        elif 0 <= self._settings.audio_device < combo.count() - 1:
+            combo.setCurrentIndex(self._settings.audio_device + 1)
+        else:
+            combo.setCurrentIndex(0)
         combo.blockSignals(False)
 
     def _populate_midi_devices(self) -> None:
@@ -1152,12 +1320,20 @@ class VynthApp:
                 combo.addItem(name)
         except Exception:
             log.warning("Could not enumerate MIDI devices")
+
+        if self._settings.midi_device is None:
+            combo.setCurrentIndex(0)
+        elif 0 <= self._settings.midi_device < combo.count() - 1:
+            combo.setCurrentIndex(self._settings.midi_device + 1)
+        else:
+            combo.setCurrentIndex(0)
         combo.blockSignals(False)
 
     def _on_audio_device_selected(self, index: int) -> None:
         device_id = None if index <= 0 else index - 1
         try:
             self._audio_engine.set_device(device_id)
+            self._persist_audio_settings()
         except Exception:
             log.exception("Failed to switch audio device")
             QMessageBox.warning(
@@ -1170,6 +1346,8 @@ class VynthApp:
             self._window._combo_audio.setCurrentIndex(0)
             self._window._combo_audio.blockSignals(False)
             self._audio_engine.set_device(None)
+            self._settings.audio_device = None
+            self._persist_audio_settings()
 
     # ── Engine startup ───────────────────────────────────────────────────
 
@@ -1191,6 +1369,11 @@ class VynthApp:
             return
         try:
             self._midi_engine.start()
+            self._midi_engine.set_channel_filter(self._settings.midi_channel)
+            if self._settings.midi_device is not None:
+                devices = self._midi_engine.get_devices()
+                if 0 <= self._settings.midi_device < len(devices):
+                    self._midi_engine.open_device(self._settings.midi_device)
         except Exception:
             log.exception("MIDI engine failed to start")
             # Non-fatal — the app works without MIDI

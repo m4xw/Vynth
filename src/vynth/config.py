@@ -177,6 +177,7 @@ class SessionSettings:
     """Mutable runtime settings."""
     audio_device: int | None = None
     midi_device: int | None = None
+    midi_channel: int | None = None
     sample_rate: int = SAMPLE_RATE
     block_size: int = BLOCK_SIZE
     buffer_count: int = 3
@@ -226,6 +227,108 @@ class AppConfig:
         if not isinstance(value, dict):
             return
         self._data["midi_controller_profile"] = copy.deepcopy(value)
+        self._save()
+
+    @property
+    def audio_settings(self) -> dict:
+        settings = self._data.get("audio_settings")
+        if not isinstance(settings, dict):
+            return {}
+
+        result: dict[str, int | None] = {}
+        sample_rate = settings.get("sample_rate")
+        if isinstance(sample_rate, int) and sample_rate > 0:
+            result["sample_rate"] = sample_rate
+
+        block_size = settings.get("block_size")
+        if isinstance(block_size, int) and block_size > 0:
+            result["block_size"] = block_size
+
+        audio_device = settings.get("audio_device")
+        if audio_device is None or isinstance(audio_device, int):
+            result["audio_device"] = audio_device
+
+        return result
+
+    @audio_settings.setter
+    def audio_settings(self, value: dict) -> None:
+        if not isinstance(value, dict):
+            return
+
+        settings: dict[str, int | None] = {}
+        sample_rate = value.get("sample_rate")
+        if isinstance(sample_rate, int) and sample_rate > 0:
+            settings["sample_rate"] = sample_rate
+
+        block_size = value.get("block_size")
+        if isinstance(block_size, int) and block_size > 0:
+            settings["block_size"] = block_size
+
+        audio_device = value.get("audio_device")
+        if audio_device is None or isinstance(audio_device, int):
+            settings["audio_device"] = audio_device
+
+        self._data["audio_settings"] = settings
+        self._save()
+
+    @property
+    def midi_settings(self) -> dict:
+        settings = self._data.get("midi_settings")
+        if not isinstance(settings, dict):
+            return {}
+
+        result: dict[str, int | None] = {}
+        midi_device = settings.get("midi_device")
+        if midi_device is None or isinstance(midi_device, int):
+            result["midi_device"] = midi_device
+
+        midi_channel = settings.get("midi_channel")
+        if midi_channel is None or isinstance(midi_channel, int):
+            result["midi_channel"] = midi_channel
+
+        return result
+
+    @midi_settings.setter
+    def midi_settings(self, value: dict) -> None:
+        if not isinstance(value, dict):
+            return
+
+        settings: dict[str, int | None] = {}
+        midi_device = value.get("midi_device")
+        if midi_device is None or isinstance(midi_device, int):
+            settings["midi_device"] = midi_device
+
+        midi_channel = value.get("midi_channel")
+        if midi_channel is None or isinstance(midi_channel, int):
+            settings["midi_channel"] = midi_channel
+
+        self._data["midi_settings"] = settings
+        self._save()
+
+    @property
+    def ui_settings(self) -> dict:
+        settings = self._data.get("ui_settings")
+        if not isinstance(settings, dict):
+            return {}
+
+        result: dict[str, str] = {}
+        visualizer_mode = settings.get("visualizer_mode")
+        if visualizer_mode in {"spectrum", "rendered", "live"}:
+            result["visualizer_mode"] = visualizer_mode
+
+        return result
+
+    @ui_settings.setter
+    def ui_settings(self, value: dict) -> None:
+        if not isinstance(value, dict):
+            return
+
+        settings: dict[str, str] = {}
+        visualizer_mode = value.get("visualizer_mode")
+        if visualizer_mode in {"spectrum", "rendered", "live"}:
+            settings["visualizer_mode"] = visualizer_mode
+
+        self._data["ui_settings"] = settings
         self._save()
 
     # ── internals ────────────────────────────────────────────

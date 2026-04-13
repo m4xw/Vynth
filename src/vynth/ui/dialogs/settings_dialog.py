@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QComboBox, QPushButton, QTabWidget, QWidget,
@@ -14,6 +14,9 @@ from vynth.ui.theme import Colors
 
 class SettingsDialog(QDialog):
     """Audio and MIDI device settings."""
+
+    applyRequested = pyqtSignal(dict)
+    refreshRequested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -37,7 +40,7 @@ class SettingsDialog(QDialog):
         audio_form.addRow("Sample Rate:", self._sample_rate)
 
         self._buffer_size = QComboBox()
-        self._buffer_size.addItems(["128", "256", "512", "1024"])
+        self._buffer_size.addItems(["128", "256", "512", "1024", "2048"])
         self._buffer_size.setCurrentText("512")
         self._buffer_size.currentTextChanged.connect(self._update_latency)
         audio_form.addRow("Buffer Size:", self._buffer_size)
@@ -89,19 +92,49 @@ class SettingsDialog(QDialog):
     def get_settings(self) -> dict:
         return {
             "output_device": self._output_device.currentText(),
+            "output_device_index": self._output_device.currentIndex(),
             "sample_rate": int(self._sample_rate.currentText()),
             "buffer_size": int(self._buffer_size.currentText()),
             "midi_device": self._midi_device.currentText(),
+            "midi_device_index": self._midi_device.currentIndex(),
             "midi_channel": self._midi_channel.currentText(),
+            "midi_channel_index": self._midi_channel.currentIndex(),
         }
 
     def set_audio_devices(self, devices: list[str]) -> None:
         self._output_device.clear()
+        self._output_device.addItem("(Default audio device)")
         self._output_device.addItems(devices)
 
     def set_midi_devices(self, devices: list[str]) -> None:
         self._midi_device.clear()
+        self._midi_device.addItem("(No MIDI device)")
         self._midi_device.addItems(devices)
+
+    def set_midi_settings(self, *, midi_device: int | None, midi_channel: int | None) -> None:
+        device_index = 0 if midi_device is None else midi_device + 1
+        if 0 <= device_index < self._midi_device.count():
+            self._midi_device.setCurrentIndex(device_index)
+
+        channel_index = 0 if midi_channel is None else midi_channel + 1
+        if 0 <= channel_index < self._midi_channel.count():
+            self._midi_channel.setCurrentIndex(channel_index)
+
+    def set_audio_settings(
+        self,
+        *,
+        sample_rate: int,
+        buffer_size: int,
+        output_device: int | None,
+    ) -> None:
+        self._sample_rate.setCurrentText(str(sample_rate))
+        self._buffer_size.setCurrentText(str(buffer_size))
+
+        device_index = 0 if output_device is None else output_device + 1
+        if 0 <= device_index < self._output_device.count():
+            self._output_device.setCurrentIndex(device_index)
+
+        self._update_latency()
 
     # -- internals -----------------------------------------------------------
 
@@ -115,7 +148,7 @@ class SettingsDialog(QDialog):
             self._latency_label.setText("—")
 
     def _refresh_devices(self) -> None:
-        pass  # hooked up by the application controller
+        self.refreshRequested.emit()
 
     def _on_apply(self) -> None:
-        pass  # hooked up by the application controller
+        self.applyRequested.emit(self.get_settings())

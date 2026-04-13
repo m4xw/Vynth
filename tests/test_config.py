@@ -106,3 +106,41 @@ class TestAppConfig:
         loaded = c2.midi_controller_profile
         assert loaded["name"] == "Test Profile"
         assert isinstance(loaded.get("mappings"), list)
+
+    def test_audio_settings_roundtrip(self, tmp_path, monkeypatch):
+        path = tmp_path / "vynth_app_config.json"
+        monkeypatch.setattr(AppConfig, "_resolve_path", staticmethod(lambda: path))
+
+        c = AppConfig()
+        c.audio_settings = {
+            "sample_rate": 44100,
+            "block_size": 256,
+            "audio_device": 2,
+        }
+
+        c2 = AppConfig()
+        assert c2.audio_settings == {
+            "sample_rate": 44100,
+            "block_size": 256,
+            "audio_device": 2,
+        }
+
+    def test_midi_settings_roundtrip(self, tmp_path, monkeypatch):
+        path = tmp_path / "vynth_app_config.json"
+        monkeypatch.setattr(AppConfig, "_resolve_path", staticmethod(lambda: path))
+
+        c = AppConfig()
+        c.midi_settings = {"midi_device": 1, "midi_channel": 2}
+
+        c2 = AppConfig()
+        assert c2.midi_settings == {"midi_device": 1, "midi_channel": 2}
+
+    def test_ui_settings_roundtrip(self, tmp_path, monkeypatch):
+        path = tmp_path / "vynth_app_config.json"
+        monkeypatch.setattr(AppConfig, "_resolve_path", staticmethod(lambda: path))
+
+        c = AppConfig()
+        c.ui_settings = {"visualizer_mode": "live"}
+
+        c2 = AppConfig()
+        assert c2.ui_settings == {"visualizer_mode": "live"}

@@ -141,6 +141,12 @@ class EffectsRack(QWidget):
         state: dict = {"params": {}, "bypass": {}, "enabled": {}}
         for key, knob in self._knobs.items():
             state["params"][key] = knob.value
+        state["params"]["filter_mode"] = float(self._filter_mode.currentIndex())
+        state["params"]["chorus_num_voices"] = float(self._chorus_voices.value())
+        state["params"]["delay_ping_pong"] = 1.0 if self._ping_pong_cb.isChecked() else 0.0
+        state["params"]["pitch_shift_preserve_formant"] = (
+            1.0 if self._formant_cb.isChecked() else 0.0
+        )
         for prefix, mod in self._modules.items():
             state["bypass"][prefix] = mod._bypass_btn.isChecked()
             state["enabled"][prefix] = mod.isChecked()
@@ -156,6 +162,15 @@ class EffectsRack(QWidget):
             knob = self._knobs.get(key)
             if knob is not None:
                 knob.value = value
+        params = state.get("params", {})
+        if "filter_mode" in params:
+            self._filter_mode.setCurrentIndex(int(params["filter_mode"]))
+        if "chorus_num_voices" in params:
+            self._chorus_voices.setValue(int(params["chorus_num_voices"]))
+        if "delay_ping_pong" in params:
+            self._ping_pong_cb.setChecked(float(params["delay_ping_pong"]) >= 0.5)
+        if "pitch_shift_preserve_formant" in params:
+            self._formant_cb.setChecked(float(params["pitch_shift_preserve_formant"]) >= 0.5)
         for prefix, bypassed in state.get("bypass", {}).items():
             mod = self._modules.get(prefix)
             if mod is not None:
@@ -177,6 +192,10 @@ class EffectsRack(QWidget):
         """Reset all knobs to their default values and restore default bypass states."""
         for knob in self._knobs.values():
             knob.value = knob.default_value
+        self._filter_mode.setCurrentIndex(0)
+        self._chorus_voices.setValue(4)
+        self._ping_pong_cb.setChecked(False)
+        self._formant_cb.setChecked(True)
         for prefix, mod in self._modules.items():
             mod._bypass_btn.setChecked(self._default_bypass.get(prefix, False))
             mod.setChecked(True)
@@ -343,6 +362,11 @@ class EffectsRack(QWidget):
 
         self._formant_cb = QCheckBox("Preserve Formant")
         self._formant_cb.setChecked(True)
+        self._formant_cb.toggled.connect(
+            lambda checked: self.paramChanged.emit(
+                "pitch_shift_preserve_formant", 1.0 if checked else 0.0
+            )
+        )
         mod.content_layout.addWidget(self._formant_cb)
         self._layout.addWidget(mod)
 
@@ -356,6 +380,9 @@ class EffectsRack(QWidget):
         mode_row = QHBoxLayout()
         self._filter_mode = QComboBox()
         self._filter_mode.addItems(["Low Pass", "High Pass", "Band Pass", "Notch"])
+        self._filter_mode.currentIndexChanged.connect(
+            lambda idx: self.paramChanged.emit("filter_mode", float(idx))
+        )
         mode_row.addWidget(self._filter_mode)
         mod.content_layout.addLayout(mode_row)
 
@@ -414,6 +441,11 @@ class EffectsRack(QWidget):
         mod.content_layout.addLayout(_knob_row(time, fb, mix))
 
         self._ping_pong_cb = QCheckBox("Ping-Pong")
+        self._ping_pong_cb.toggled.connect(
+            lambda checked: self.paramChanged.emit(
+                "delay_ping_pong", 1.0 if checked else 0.0
+            )
+        )
         mod.content_layout.addWidget(self._ping_pong_cb)
         self._layout.addWidget(mod)
 
