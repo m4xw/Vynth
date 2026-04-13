@@ -158,26 +158,12 @@ class MIDIEngine(QObject):
             note, velocity = data[1], data[2]
             if velocity == 0:
                 # Note-on with velocity 0 == note-off (common convention)
-                self._command_queue.push(
-                    Command(type=CommandType.NOTE_OFF, channel=channel, note=note)
-                )
                 self.note_off_received.emit(note)
             else:
-                self._command_queue.push(
-                    Command(
-                        type=CommandType.NOTE_ON,
-                        channel=channel,
-                        note=note,
-                        velocity=velocity,
-                    )
-                )
                 self.note_on_received.emit(note, velocity)
 
         elif status == _NOTE_OFF and len(data) >= 3:
             note = data[1]
-            self._command_queue.push(
-                Command(type=CommandType.NOTE_OFF, channel=channel, note=note)
-            )
             self.note_off_received.emit(note)
 
         elif status == _CONTROL_CHANGE and len(data) >= 3:

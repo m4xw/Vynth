@@ -231,6 +231,14 @@ class TestVoiceAllocatorSliceConfig:
         va.set_param("slice_start_note", 60.0)
         assert all(v._slice_start_note == 60 for v in va.voices)
 
+    def test_slice_region_start_via_param(self, va):
+        va.set_param("slice_region_start", 1234.0)
+        assert all(v._slice_region_start == 1234 for v in va.voices)
+
+    def test_slice_region_end_via_param(self, va):
+        va.set_param("slice_region_end", 5678.0)
+        assert all(v._slice_region_end == 5678 for v in va.voices)
+
     def test_slice_mode_produces_audio(self, va_with_sample):
         va_with_sample.set_playback_mode(PlaybackMode.SLICE)
         va_with_sample.set_slice_config(16, 36)

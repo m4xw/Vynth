@@ -121,6 +121,7 @@ class VynthApp:
         # Push initial bypass defaults to engine (signals fired during EffectsRack
         # construction before wiring was connected, so they were silently dropped)
         self._effects_rack.force_emit_all_bypass()
+        self._sync_playback_slice_state()
 
         # ── visualization timer ──────────────────────────────────────────
         interval_ms = max(1, int(1000 / UI_FPS))
@@ -193,13 +194,14 @@ class VynthApp:
         )
 
     def _on_midi_note_on(self, note: int, velocity: int) -> None:
-        start_frame = self._resolve_note_start_frame()
+        self._sync_playback_slice_state()
+        start_frame, end_frame = self._resolve_note_region()
         self._audio_engine.push_command(
             Command(
                 type=CommandType.NOTE_ON,
                 note=note,
                 velocity=velocity,
-                data=start_frame if start_frame > 0 else None,
+                data=(start_frame, end_frame),
             )
         )
         self._midi_keyboard.highlight_note(note, velocity)
@@ -289,6 +291,7 @@ class VynthApp:
         )
         # Update UI
         self._waveform_editor.set_sample(sample)
+        self._push_slice_region_params()
         self._invalidate_rendered_waveform()
         self._window.set_sample_info(
             f"{sample.name}  \u2014  {sample.duration_s:.2f}s  "
@@ -346,6 +349,15 @@ class VynthApp:
                 param_value=float(start_note),
             )
         )
+        self._push_slice_region_params()
+
+    def _sync_playback_slice_state(self) -> None:
+        """Push current playback/slice UI state to engine immediately."""
+        self._on_playback_mode_changed(self._effects_rack.playback_mode_index)
+        self._on_slice_config_changed(
+            self._effects_rack.slice_num_slices,
+            self._effects_rack.slice_start_note,
+        )
 
     # ── Mixer → Engine ───────────────────────────────────────────────────
 
@@ -363,6 +375,7 @@ class VynthApp:
         self._waveform_editor.selectionChanged.connect(self._on_selection_changed)
 
     def _on_selection_changed(self, start: int, end: int) -> None:
+        self._push_slice_region_params()
         self._invalidate_rendered_waveform()
 
     def _on_loop_points_changed(self, start: int, end: int) -> None:
@@ -379,6 +392,7 @@ class VynthApp:
         self._audio_engine.push_command(
             Command(type=CommandType.SET_SAMPLE, data=sample)
         )
+        self._push_slice_region_params()
         self._invalidate_rendered_waveform()
 
     def _on_edit_requested(self, action: str) -> None:
@@ -421,6 +435,7 @@ class VynthApp:
         self._audio_engine.push_command(
             Command(type=CommandType.SET_SAMPLE, data=new_sample)
         )
+        self._push_slice_region_params()
         self._invalidate_rendered_waveform()
 
     # ── Visualization timer ──────────────────────────────────────────────
@@ -685,6 +700,7 @@ class VynthApp:
             self._sample_manager.remove_sample(name)
         # Reset effects rack to defaults
         self._effects_rack.reset_all()
+        self._sync_playback_slice_state()
         # Reset master volume
         self._settings.master_volume = 0.8
         self._audio_engine.set_master_volume(0.8)
@@ -694,6 +710,7 @@ class VynthApp:
         self._rendered_waveform_view.clear()
         self._live_waveform_view.clear()
         self._current_sample = None
+        self._push_slice_region_params()
         self._window.set_sample_info("")
         self._invalidate_rendered_waveform()
         self._window.statusBar().showMessage("New session", 3000)
@@ -755,6 +772,7 @@ class VynthApp:
         # Force-push all bypass states to engine (Qt skips toggled() when the
         # checked state hasn't changed vs. what set_all_state just wrote)
         self._effects_rack.force_emit_all_bypass()
+        self._sync_playback_slice_state()
 
         self._app_config.last_session_path = str(path)
         self._window.statusBar().showMessage(f"Session loaded: {path}", 3000)
@@ -788,11 +806,14 @@ class VynthApp:
         sample = self._sample_manager.get_selected()
         if sample is None:
             return
-        start_frame = self._resolve_note_start_frame()
+        self._sync_playback_slice_state()
+
+        preview_note = int(sample.root_note)
+        start_frame, end_frame = self._resolve_note_region()
         self._audio_engine.push_command(
             Command(
-                type=CommandType.NOTE_ON, note=60, velocity=100,
-                data=start_frame if start_frame > 0 else None,
+                type=CommandType.NOTE_ON, note=preview_note, velocity=100,
+                data=(start_frame, end_frame),
             )
         )
 
@@ -810,6 +831,58 @@ class VynthApp:
             return max(0, int(sample.loop.start))
 
         return 0
+
+    def _resolve_note_region(self) -> tuple[int, int]:
+        """Resolve note playback region as (start, end).
+
+        Selection limits playback to [start, end).
+        Loop/no selection starts at loop start or zero and plays normally.
+        """
+        sample = self._sample_manager.get_selected()
+        if sample is None:
+            return (0, 0)
+
+        sel_start, sel_end = self._waveform_editor.get_selection()
+        if sel_end > sel_start:
+            return (max(0, int(sel_start)), min(sample.length, int(sel_end)))
+
+        if sample.loop.enabled and sample.loop.end > sample.loop.start:
+            return (max(0, int(sample.loop.start)), 0)
+
+        return (0, 0)
+
+    def _resolve_slice_region(self) -> tuple[int, int]:
+        """Resolve slice source region: selection, then loop, else full sample."""
+        sample = self._sample_manager.get_selected()
+        if sample is None:
+            return (0, 0)
+
+        sel_start, sel_end = self._waveform_editor.get_selection()
+        if sel_end > sel_start:
+            return (max(0, int(sel_start)), min(sample.length, int(sel_end)))
+
+        if sample.loop.enabled and sample.loop.end > sample.loop.start:
+            return (max(0, int(sample.loop.start)), min(sample.length, int(sample.loop.end)))
+
+        return (0, int(sample.length))
+
+    def _push_slice_region_params(self) -> None:
+        """Send active slice source region to the audio engine."""
+        start, end = self._resolve_slice_region()
+        self._audio_engine.push_command(
+            Command(
+                type=CommandType.PARAM_CHANGE,
+                param_name="slice_region_start",
+                param_value=float(start),
+            )
+        )
+        self._audio_engine.push_command(
+            Command(
+                type=CommandType.PARAM_CHANGE,
+                param_name="slice_region_end",
+                param_value=float(end),
+            )
+        )
 
     def _on_stop(self) -> None:
         self._audio_engine.push_command(

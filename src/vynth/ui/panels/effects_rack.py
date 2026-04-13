@@ -147,6 +147,7 @@ class EffectsRack(QWidget):
         state["playback_mode"] = self._mode_combo.currentIndex()
         state["slice_num_slices"] = self._slice_num_spin.value()
         state["slice_start_note"] = self._slice_note_spin.value()
+        state["slice_all_keys"] = self._slice_all_keys.isChecked()
         return state
 
     def set_all_state(self, state: dict) -> None:
@@ -169,6 +170,8 @@ class EffectsRack(QWidget):
             self._slice_num_spin.setValue(state["slice_num_slices"])
         if "slice_start_note" in state:
             self._slice_note_spin.setValue(state["slice_start_note"])
+        if "slice_all_keys" in state:
+            self._slice_all_keys.setChecked(state["slice_all_keys"])
 
     def reset_all(self) -> None:
         """Reset all knobs to their default values and restore default bypass states."""
@@ -180,6 +183,7 @@ class EffectsRack(QWidget):
         self._mode_combo.setCurrentIndex(0)
         self._slice_num_spin.setValue(16)
         self._slice_note_spin.setValue(36)
+        self._slice_all_keys.setChecked(False)
         self.force_emit_all_bypass()
 
     def force_emit_all_bypass(self) -> None:
@@ -231,9 +235,12 @@ class EffectsRack(QWidget):
 
         # Slice config (visible only in slice mode)
         self._slice_config_widget = QWidget()
-        slice_lay = QHBoxLayout(self._slice_config_widget)
+        slice_lay = QVBoxLayout(self._slice_config_widget)
         slice_lay.setContentsMargins(0, 0, 0, 0)
-        slice_lay.setSpacing(8)
+        slice_lay.setSpacing(4)
+
+        slice_row1 = QHBoxLayout()
+        slice_row1.setSpacing(8)
 
         self._slice_num_spin = QSpinBox()
         self._slice_num_spin.setRange(2, 128)
@@ -241,7 +248,7 @@ class EffectsRack(QWidget):
         self._slice_num_spin.setPrefix("Slices: ")
         self._slice_num_spin.setToolTip("Number of equal slices")
         self._slice_num_spin.valueChanged.connect(self._on_slice_config_changed)
-        slice_lay.addWidget(self._slice_num_spin)
+        slice_row1.addWidget(self._slice_num_spin)
 
         self._slice_note_spin = QSpinBox()
         self._slice_note_spin.setRange(0, 127)
@@ -249,7 +256,16 @@ class EffectsRack(QWidget):
         self._slice_note_spin.setPrefix("Start: ")
         self._slice_note_spin.setToolTip("MIDI note for the first slice (36 = C2)")
         self._slice_note_spin.valueChanged.connect(self._on_slice_config_changed)
-        slice_lay.addWidget(self._slice_note_spin)
+        slice_row1.addWidget(self._slice_note_spin)
+
+        slice_lay.addLayout(slice_row1)
+
+        self._slice_all_keys = QCheckBox("All Keys")
+        self._slice_all_keys.setToolTip(
+            "Split sample evenly across all MIDI keys (including black keys) from start note"
+        )
+        self._slice_all_keys.toggled.connect(self._on_slice_all_keys_toggled)
+        slice_lay.addWidget(self._slice_all_keys)
 
         self._slice_config_widget.setVisible(False)
         lay.addWidget(self._slice_config_widget)
@@ -260,7 +276,18 @@ class EffectsRack(QWidget):
         self._slice_config_widget.setVisible(index == 2)
         self.playbackModeChanged.emit(index)
 
+    def _on_slice_all_keys_toggled(self, checked: bool) -> None:
+        self._slice_num_spin.setEnabled(not checked)
+        if checked:
+            self._slice_num_spin.setValue(128 - self._slice_note_spin.value())
+        self._on_slice_config_changed()
+
     def _on_slice_config_changed(self) -> None:
+        if self._slice_all_keys.isChecked():
+            num = 128 - self._slice_note_spin.value()
+            self._slice_num_spin.blockSignals(True)
+            self._slice_num_spin.setValue(num)
+            self._slice_num_spin.blockSignals(False)
         self.sliceConfigChanged.emit(
             self._slice_num_spin.value(),
             self._slice_note_spin.value(),

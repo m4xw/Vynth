@@ -159,6 +159,14 @@ class TestVoiceGranularMode:
             out = voice.process(512)
             assert not np.any(np.isnan(out))
 
+    def test_granular_uses_selected_region_as_source(self, voice, sample):
+        voice.mode = PlaybackMode.GRANULAR
+        start = 1000
+        end = 5000
+        voice.note_on(60, 100, sample, start_frame=start, end_frame=end)
+        assert voice._granular._source is not None
+        assert len(voice._granular._source) == (end - start)
+
 
 class TestVoiceADSR:
     def test_set_adsr_params(self, voice, sample):
@@ -226,6 +234,41 @@ class TestVoiceSliceMode:
         voice.mode = PlaybackMode.SLICE
         voice.set_slice_config(16, 36)
         voice.note_on(35, 127, sample)
+        assert voice.is_active is False
+
+    def test_slice_region_limits_slice_bounds(self, voice, sample):
+        voice.mode = PlaybackMode.SLICE
+        voice.set_slice_config(4, 36)
+        region_start = 1000
+        region_end = 5000
+        voice.set_slice_region(region_start, region_end)
+        voice.note_on(36, 127, sample)
+        assert voice._slice_start_frame >= region_start
+        assert voice._slice_end_frame <= region_end
+
+    def test_slice_region_fallbacks_to_full_sample(self, voice, sample):
+        voice.mode = PlaybackMode.SLICE
+        voice.set_slice_config(4, 36)
+        # Invalid region should fall back to whole sample
+        voice.set_slice_region(2000, 1000)
+        voice.note_on(36, 127, sample)
+        assert voice._slice_start_frame == 0
+        assert voice._slice_end_frame <= sample.length
+
+    def test_slice_region_last_slice_reaches_region_end(self, voice, sample):
+        voice.mode = PlaybackMode.SLICE
+        voice.set_slice_config(7, 36)
+        voice.set_slice_region(100, 1111)
+        voice.note_on(42, 127, sample)  # last slice: 36 + 6
+        assert voice._slice_end_frame == 1111
+
+    def test_slice_region_caps_effective_slices_to_region_length(self, voice, sample):
+        voice.mode = PlaybackMode.SLICE
+        voice.set_slice_config(128, 36)
+        voice.set_slice_region(1000, 1004)  # 4 frames only
+        voice.note_on(39, 127, sample)  # 4th effective slice
+        assert voice.is_active is True
+        voice.note_on(40, 127, sample)  # out of effective range
         assert voice.is_active is False
 
     def test_slice_out_of_range_above(self, voice, sample):

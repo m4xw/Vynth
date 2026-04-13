@@ -43,7 +43,7 @@ class VoiceAllocator:
 
     # ── Note events ──────────────────────────────────────────────────────
 
-    def note_on(self, note: int, velocity: int, start_frame: int = 0) -> None:
+    def note_on(self, note: int, velocity: int, start_frame: int = 0, end_frame: int = 0) -> None:
         """Allocate a voice for *note* (steal the oldest if all are busy)."""
         if self._current_sample is None:
             return
@@ -52,7 +52,7 @@ class VoiceAllocator:
         if voice is None:
             voice = self._steal_oldest_voice()
 
-        voice.note_on(note, velocity, self._current_sample, start_frame)
+        voice.note_on(note, velocity, self._current_sample, start_frame, end_frame)
 
     def note_off(self, note: int) -> None:
         """Release all voices currently playing *note*."""
@@ -142,6 +142,10 @@ class VoiceAllocator:
                 self.set_slice_config(int(value), self.voices[0]._slice_start_note)
             elif param == "start_note":
                 self.set_slice_config(self.voices[0]._slice_num_slices, int(value))
+            elif param == "region_start":
+                self.set_slice_region(int(value), self.voices[0]._slice_region_end)
+            elif param == "region_end":
+                self.set_slice_region(self.voices[0]._slice_region_start, int(value))
 
     def get_param(self, name: str) -> float:
         """Read back a parameter value."""
@@ -199,6 +203,11 @@ class VoiceAllocator:
         """Configure slice mode parameters for all voices."""
         for v in self.voices:
             v.set_slice_config(num_slices, start_note)
+
+    def set_slice_region(self, start_frame: int, end_frame: int) -> None:
+        """Configure slice mode source region for all voices."""
+        for v in self.voices:
+            v.set_slice_region(start_frame, end_frame)
 
     # ── State ────────────────────────────────────────────────────────────
 

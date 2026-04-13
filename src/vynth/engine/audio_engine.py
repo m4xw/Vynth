@@ -164,8 +164,18 @@ class AudioEngine(QObject):
         """Dispatch a command inside the audio callback (real-time safe)."""
         match cmd.type:
             case CommandType.NOTE_ON:
-                start_frame = cmd.data if isinstance(cmd.data, int) else 0
-                self._voice_allocator.note_on(cmd.note, cmd.velocity, start_frame)
+                start_frame = 0
+                end_frame = 0
+                if isinstance(cmd.data, int):
+                    start_frame = cmd.data
+                elif (
+                    isinstance(cmd.data, tuple)
+                    and len(cmd.data) == 2
+                    and isinstance(cmd.data[0], int)
+                    and isinstance(cmd.data[1], int)
+                ):
+                    start_frame, end_frame = cmd.data
+                self._voice_allocator.note_on(cmd.note, cmd.velocity, start_frame, end_frame)
             case CommandType.NOTE_OFF:
                 self._voice_allocator.note_off(cmd.note)
             case CommandType.ALL_NOTES_OFF:

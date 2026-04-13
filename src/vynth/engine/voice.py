@@ -36,6 +36,7 @@ class Voice:
         "_velocity",
         "_playing",
         "_position",
+        "_play_end_frame",
         "_pitch_ratio",
         "_start_time",
         "_mode",
@@ -47,6 +48,8 @@ class Voice:
         # Slice mode config
         "_slice_num_slices",
         "_slice_start_note",
+        "_slice_region_start",
+        "_slice_region_end",
         "_slice_start_frame",
         "_slice_end_frame",
     )
@@ -60,6 +63,7 @@ class Voice:
         self._velocity: int = 0
         self._playing: bool = False
         self._position: float = 0.0
+        self._play_end_frame: int = 0
         self._pitch_ratio: float = 1.0
         self._start_time: float = 0.0
         self._mode: PlaybackMode = PlaybackMode.SAMPLER
@@ -67,6 +71,8 @@ class Voice:
         # Slice mode config
         self._slice_num_slices: int = 16
         self._slice_start_note: int = 36  # C2
+        self._slice_region_start: int = 0
+        self._slice_region_end: int = 0
         self._slice_start_frame: int = 0
         self._slice_end_frame: int = 0
 
@@ -105,7 +111,14 @@ class Voice:
 
     # ── Note control ─────────────────────────────────────────────────────
 
-    def note_on(self, note: int, velocity: int, sample: Sample, start_frame: int = 0) -> None:
+    def note_on(
+        self,
+        note: int,
+        velocity: int,
+        sample: Sample,
+        start_frame: int = 0,
+        end_frame: int = 0,
+    ) -> None:
         """Start playing *sample* at the pitch implied by *note*."""
         self._sample = sample
         self._note = note
@@ -122,24 +135,47 @@ class Voice:
         self._filter.reset()
 
         self._adsr.gate_on(velocity / 127.0)
+        self._play_end_frame = max(0, int(end_frame))
 
         if self._mode == PlaybackMode.SLICE:
+            region_start = max(0, int(self._slice_region_start))
+            region_end = int(self._slice_region_end)
+            if region_end <= region_start:
+                region_start = 0
+                region_end = sample.length
+            elif region_end > sample.length:
+                region_end = sample.length
+            region_len = max(1, region_end - region_start)
+            effective_slices = max(1, min(self._slice_num_slices, region_len))
+
             # Calculate which slice this note maps to
             slice_idx = note - self._slice_start_note
-            if slice_idx < 0 or slice_idx >= self._slice_num_slices:
+            if slice_idx < 0 or slice_idx >= effective_slices:
                 # Note outside slice range — don't play
                 self._playing = False
                 self._adsr.reset()
                 return
-            slice_len = max(1, sample.length // self._slice_num_slices)
-            self._slice_start_frame = slice_idx * slice_len
-            self._slice_end_frame = min((slice_idx + 1) * slice_len, sample.length)
+
+            # Evenly partition full region without dropping remainder frames.
+            self._slice_start_frame = region_start + ((slice_idx * region_len) // effective_slices)
+            self._slice_end_frame = region_start + (((slice_idx + 1) * region_len) // effective_slices)
+            if self._slice_end_frame <= self._slice_start_frame:
+                self._slice_end_frame = min(self._slice_start_frame + 1, region_end)
             self._position = float(self._slice_start_frame)
             # In slice mode, pitch ratio is 1.0 (each slice plays at original pitch)
             self._pitch_ratio = 1.0
         elif self._mode == PlaybackMode.GRANULAR:
-            self._position = float(start_frame)
-            self._granular.set_source(sample.mono, sample.sample_rate)
+            gran_start = max(0, int(start_frame))
+            gran_end = int(end_frame)
+            if gran_end <= gran_start or gran_end > sample.length:
+                gran_end = sample.length
+
+            source = sample.mono[gran_start:gran_end]
+            if source.size < 2:
+                source = sample.mono
+
+            self._position = 0.0
+            self._granular.set_source(source, sample.sample_rate)
             self._granular.set_param("pitch_ratio", self._pitch_ratio)
             self._granular.reset()
         else:
@@ -192,6 +228,7 @@ class Voice:
         stereo = sample.get_stereo()  # (length, 2)
         length = sample.length
         loop = sample.loop
+        play_end = self._play_end_frame if self._play_end_frame > 0 else length
 
         # Read with linear interpolation at pitch_ratio speed
         out = np.zeros((n_frames, 2), dtype=np.float32)
@@ -204,7 +241,11 @@ class Voice:
             idx0 = int(pos)
             frac = pos - idx0
 
-            if loop.enabled:
+            if play_end < length:
+                if idx0 >= play_end - 1:
+                    self._playing = False
+                    break
+            elif loop.enabled:
                 # Wrap position inside loop region
                 loop_len = loop.end - loop.start
                 if loop_len > 0 and pos >= loop.end:
@@ -307,6 +348,14 @@ class Voice:
         self._slice_num_slices = max(1, min(num_slices, 128))
         self._slice_start_note = max(0, min(start_note, 127))
 
+    def set_slice_region(self, start_frame: int, end_frame: int) -> None:
+        """Configure the frame range used for slice mode.
+
+        If *end_frame* <= *start_frame*, slice mode falls back to whole sample.
+        """
+        self._slice_region_start = max(0, int(start_frame))
+        self._slice_region_end = max(0, int(end_frame))
+
     # ── Reset ────────────────────────────────────────────────────────────
 
     def reset(self) -> None:
@@ -316,10 +365,13 @@ class Voice:
         self._velocity = 0
         self._playing = False
         self._position = 0.0
+        self._play_end_frame = 0
         self._pitch_ratio = 1.0
         self._start_time = 0.0
         self._slice_start_frame = 0
         self._slice_end_frame = 0
+        self._slice_region_start = 0
+        self._slice_region_end = 0
         self._adsr.reset()
         self._pitch_shifter.reset()
         self._formant.reset()
