@@ -4,11 +4,12 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox, QStackedWidget
 
 from vynth.config import (
     AppConfig,
@@ -22,6 +23,7 @@ from vynth.engine.audio_engine import AudioEngine
 from vynth.engine.export import Exporter
 from vynth.engine.midi_engine import MIDIEngine
 from vynth.engine.recorder import Recorder
+from vynth.engine.voice import PlaybackMode
 from vynth.sampler.sample import Sample
 from vynth.sampler.sample_editor import SampleEditor
 from vynth.sampler.sample_manager import SampleManager
@@ -35,6 +37,11 @@ from vynth.ui.panels.recorder_panel import RecorderPanel
 from vynth.ui.panels.sample_browser import SampleBrowser
 from vynth.ui.theme import apply_theme
 from vynth.ui.widgets.midi_keyboard import MIDIKeyboardWidget
+from vynth.ui.widgets.rendered_waveform_view import (
+    RenderContext,
+    RenderedWaveformProcessor,
+    RenderedWaveformView,
+)
 from vynth.ui.widgets.spectrum_view import SpectrumView
 from vynth.ui.widgets.waveform_editor import WaveformEditor
 from vynth.utils.thread_safe_queue import Command, CommandType
@@ -76,11 +83,27 @@ class VynthApp:
         # ── real panels ──────────────────────────────────────────────────
         self._waveform_editor = WaveformEditor()
         self._spectrum_view = SpectrumView()
+        self._rendered_waveform_view = RenderedWaveformView()
         self._recorder_panel = RecorderPanel()
         self._sample_browser = SampleBrowser()
         self._effects_rack = EffectsRack()
         self._mixer_panel = MixerPanel()
         self._midi_keyboard = MIDIKeyboardWidget()
+
+        self._visualizer_mode = "spectrum"
+        self._current_sample: Sample | None = None
+        self._render_processor = RenderedWaveformProcessor()
+        self._render_invalidated = True
+        self._render_invalidate_ts = 0.0
+        self._render_debounce_s = 0.06
+
+        fx_state = self._effects_rack.get_all_state()
+        self._effect_params: dict[str, float] = {
+            str(k): float(v) for k, v in fx_state.get("params", {}).items()
+        }
+        self._effect_bypass: dict[str, bool] = {
+            str(k): bool(v) for k, v in fx_state.get("bypass", {}).items()
+        }
 
         self._replace_placeholders()
 
@@ -132,7 +155,11 @@ class VynthApp:
         # Central area — waveform editor + spectrum
         splitter = self._window.centralWidget()
         splitter.replaceWidget(0, self._waveform_editor)
-        splitter.replaceWidget(1, self._spectrum_view)
+        self._visualizer_stack = QStackedWidget()
+        self._visualizer_stack.addWidget(self._spectrum_view)
+        self._visualizer_stack.addWidget(self._rendered_waveform_view)
+        splitter.replaceWidget(1, self._visualizer_stack)
+        self._set_visualizer_mode("spectrum")
 
         # Docks
         self._window.dock_sample_browser.setWidget(self._sample_browser)
@@ -163,8 +190,14 @@ class VynthApp:
         )
 
     def _on_midi_note_on(self, note: int, velocity: int) -> None:
+        start_frame = self._resolve_note_start_frame()
         self._audio_engine.push_command(
-            Command(type=CommandType.NOTE_ON, note=note, velocity=velocity)
+            Command(
+                type=CommandType.NOTE_ON,
+                note=note,
+                velocity=velocity,
+                data=start_frame if start_frame > 0 else None,
+            )
         )
         self._midi_keyboard.highlight_note(note, velocity)
         self._window.flash_midi_activity()
@@ -216,7 +249,9 @@ class VynthApp:
             sample = self._recorder.stop_recording()
             if sample.length > 0:
                 self._sample_manager.add_sample(sample)
+                self._current_sample = sample
                 self._waveform_editor.set_sample(sample)
+                self._invalidate_rendered_waveform()
                 self._window.set_sample_info(
                     f"{sample.name}  \u2014  {sample.duration_s:.2f}s  "
                     f"{sample.sample_rate} Hz  {sample.channels}ch"
@@ -244,12 +279,14 @@ class VynthApp:
         sample = self._sample_manager.get_sample(name)
         if sample is None:
             return
+        self._current_sample = sample
         # Push to audio engine
         self._audio_engine.push_command(
             Command(type=CommandType.SET_SAMPLE, data=sample)
         )
         # Update UI
         self._waveform_editor.set_sample(sample)
+        self._invalidate_rendered_waveform()
         self._window.set_sample_info(
             f"{sample.name}  \u2014  {sample.duration_s:.2f}s  "
             f"{sample.sample_rate} Hz  {sample.channels}ch"
@@ -260,8 +297,12 @@ class VynthApp:
     def _wire_effects_signals(self) -> None:
         self._effects_rack.paramChanged.connect(self._on_effect_param_changed)
         self._effects_rack.bypassChanged.connect(self._on_effect_bypass_changed)
+        self._effects_rack.playbackModeChanged.connect(self._on_playback_mode_changed)
+        self._effects_rack.sliceConfigChanged.connect(self._on_slice_config_changed)
 
     def _on_effect_param_changed(self, name: str, value: float) -> None:
+        self._effect_params[name] = value
+        self._invalidate_rendered_waveform()
         self._audio_engine.push_command(
             Command(
                 type=CommandType.PARAM_CHANGE,
@@ -271,11 +312,35 @@ class VynthApp:
         )
 
     def _on_effect_bypass_changed(self, prefix: str, bypassed: bool) -> None:
+        self._effect_bypass[prefix] = bypassed
+        self._invalidate_rendered_waveform()
         self._audio_engine.push_command(
             Command(
                 type=CommandType.PARAM_CHANGE,
                 param_name=f"{prefix}_bypass",
                 param_value=1.0 if bypassed else 0.0,
+            )
+        )
+
+    def _on_playback_mode_changed(self, index: int) -> None:
+        mode = [PlaybackMode.SAMPLER, PlaybackMode.GRANULAR, PlaybackMode.SLICE][index]
+        self._audio_engine.push_command(
+            Command(type=CommandType.SET_PLAYBACK_MODE, data=mode)
+        )
+
+    def _on_slice_config_changed(self, num_slices: int, start_note: int) -> None:
+        self._audio_engine.push_command(
+            Command(
+                type=CommandType.PARAM_CHANGE,
+                param_name="slice_num_slices",
+                param_value=float(num_slices),
+            )
+        )
+        self._audio_engine.push_command(
+            Command(
+                type=CommandType.PARAM_CHANGE,
+                param_name="slice_start_note",
+                param_value=float(start_note),
             )
         )
 
@@ -285,6 +350,7 @@ class VynthApp:
         self._mixer_panel.volumeChanged.connect(
             self._audio_engine.set_master_volume
         )
+        self._mixer_panel.visualizerModeChanged.connect(self._set_visualizer_mode)
 
     # ── Waveform Editor → Sample Editor ──────────────────────────────────
 
@@ -342,10 +408,12 @@ class VynthApp:
         self._sample_manager.remove_sample(sample.name)
         self._sample_manager.add_sample(new_sample)
         self._sample_manager.select_sample(new_sample.name)
+        self._current_sample = new_sample
         self._waveform_editor.set_sample(new_sample)
         self._audio_engine.push_command(
             Command(type=CommandType.SET_SAMPLE, data=new_sample)
         )
+        self._invalidate_rendered_waveform()
 
     # ── Visualization timer ──────────────────────────────────────────────
 
@@ -361,11 +429,74 @@ class VynthApp:
         voices = self._audio_engine.active_voice_count
         self._mixer_panel.set_voice_count(voices)
 
-        # Visualization buffer → spectrum analyzer
-        buf = self._audio_engine.get_visualization_buffer(SPECTRUM_FFT_SIZE)
-        if buf is not None and buf.size > 0:
-            mono = buf.mean(axis=1) if buf.ndim == 2 else buf
-            self._spectrum_view.push_audio_block(mono)
+        if self._visualizer_mode == "spectrum":
+            # Visualization buffer → spectrum analyzer
+            buf = self._audio_engine.get_visualization_buffer(SPECTRUM_FFT_SIZE)
+            if buf is not None and buf.size > 0:
+                mono = buf.mean(axis=1) if buf.ndim == 2 else buf
+                self._spectrum_view.push_audio_block(mono)
+            return
+
+        self._update_rendered_waveform_if_needed()
+
+    def _set_visualizer_mode(self, mode: str) -> None:
+        target = "rendered" if mode == "rendered" else "spectrum"
+        self._visualizer_mode = target
+        self._mixer_panel.set_visualizer_mode(target)
+        if target == "rendered":
+            self._visualizer_stack.setCurrentWidget(self._rendered_waveform_view)
+            self._invalidate_rendered_waveform()
+        else:
+            self._visualizer_stack.setCurrentWidget(self._spectrum_view)
+
+    def _invalidate_rendered_waveform(self) -> None:
+        self._render_invalidated = True
+        self._render_invalidate_ts = time.monotonic()
+
+    def _update_rendered_waveform_if_needed(self) -> None:
+        if not self._render_invalidated:
+            return
+        if (time.monotonic() - self._render_invalidate_ts) < self._render_debounce_s:
+            return
+
+        sample = self._current_sample or self._sample_manager.get_selected()
+        if sample is None:
+            self._rendered_waveform_view.clear()
+            self._render_invalidated = False
+            return
+
+        rendered = self._render_processor.render(
+            sample.data,
+            sample.sample_rate,
+            RenderContext(params=self._effect_params, bypass=self._effect_bypass),
+        )
+        self._rendered_waveform_view.set_rendered_data(rendered, sample.sample_rate)
+
+        if self._effect_bypass.get("filter", False):
+            self._rendered_waveform_view.clear_filter_overlay()
+        else:
+            self._rendered_waveform_view.set_filter_overlay(
+                frequency_hz=self._effect_params.get(
+                    "filter_frequency",
+                    self._audio_engine.voice_allocator.get_param("filter_frequency"),
+                ),
+                q=self._effect_params.get(
+                    "filter_q",
+                    self._audio_engine.voice_allocator.get_param("filter_q"),
+                ),
+                mode=int(
+                    self._effect_params.get(
+                        "filter_mode",
+                        self._audio_engine.voice_allocator.get_param("filter_mode"),
+                    )
+                ),
+                gain_db=self._effect_params.get(
+                    "filter_gain_db",
+                    self._audio_engine.voice_allocator.get_param("filter_gain_db"),
+                ),
+            )
+
+        self._render_invalidated = False
 
     # ── Menu actions ─────────────────────────────────────────────────────
 
@@ -428,12 +559,22 @@ class VynthApp:
             return
 
         try:
-            self._exporter.export_sample(
-                sample,
-                path,
-                sample_rate=export_cfg["sr"],
-                bit_depth=export_cfg["bits"],
-            )
+            if export_cfg.get("apply_effects", False):
+                self._exporter.render_sample(
+                    sample,
+                    self._audio_engine.voice_allocator,
+                    path,
+                    sample_rate=export_cfg["sr"],
+                    bit_depth=export_cfg["bits"],
+                    master_volume=self._audio_engine.master_volume,
+                )
+            else:
+                self._exporter.export_sample(
+                    sample,
+                    path,
+                    sample_rate=export_cfg["sr"],
+                    bit_depth=export_cfg["bits"],
+                )
             QMessageBox.information(
                 self._window, "Export Complete",
                 f"Exported to:\n{path}",
@@ -520,7 +661,10 @@ class VynthApp:
         self._mixer_panel.set_volume(0.8)
         # Clear waveform
         self._waveform_editor.clear()
+        self._rendered_waveform_view.clear()
+        self._current_sample = None
         self._window.set_sample_info("")
+        self._invalidate_rendered_waveform()
         self._window.statusBar().showMessage("New session", 3000)
 
     def _load_session_from_path(self, path: Path) -> None:
@@ -570,6 +714,13 @@ class VynthApp:
         effects_state = data.get("effects")
         if effects_state:
             self._effects_rack.set_all_state(effects_state)
+            self._effect_params = {
+                str(k): float(v) for k, v in effects_state.get("params", {}).items()
+            }
+            self._effect_bypass = {
+                str(k): bool(v) for k, v in effects_state.get("bypass", {}).items()
+            }
+            self._invalidate_rendered_waveform()
         # Force-push all bypass states to engine (Qt skips toggled() when the
         # checked state hasn't changed vs. what set_all_state just wrote)
         self._effects_rack.force_emit_all_bypass()
@@ -606,15 +757,28 @@ class VynthApp:
         sample = self._sample_manager.get_selected()
         if sample is None:
             return
-        # Use selection start if a region is selected
-        sel = self._waveform_editor.get_selection()
-        start_frame = sel[0] if sel[0] < sel[1] else 0
+        start_frame = self._resolve_note_start_frame()
         self._audio_engine.push_command(
             Command(
                 type=CommandType.NOTE_ON, note=60, velocity=100,
                 data=start_frame if start_frame > 0 else None,
             )
         )
+
+    def _resolve_note_start_frame(self) -> int:
+        """Prefer selection start, then loop start, else zero."""
+        sample = self._sample_manager.get_selected()
+        if sample is None:
+            return 0
+
+        sel_start, sel_end = self._waveform_editor.get_selection()
+        if sel_end > sel_start:
+            return max(0, sel_start)
+
+        if sample.loop.enabled and sample.loop.end > sample.loop.start:
+            return max(0, int(sample.loop.start))
+
+        return 0
 
     def _on_stop(self) -> None:
         self._audio_engine.push_command(

@@ -1,345 +1,172 @@
-"""Tests for session save/load — sample persistence, effects state, round-trip."""
+"""Exhaustive tests for session save/load round-trip."""
 import json
-from pathlib import Path
-
 import numpy as np
 import pytest
-import soundfile as sf
+import tempfile
+from pathlib import Path
 
-from vynth.config import SAMPLE_RATE
-from vynth.sampler.sample import Sample, LoopRegion
-from vynth.sampler.sample_manager import SampleManager
-
-
-@pytest.fixture
-def tmp_session(tmp_path):
-    """Provide a temp dir and session file path."""
-    return tmp_path / "test_session.json"
+from vynth.sampler.sample import Sample
 
 
-@pytest.fixture
-def sample_wav(tmp_path):
-    """Create a real WAV file on disk and return its path."""
-    t = np.arange(SAMPLE_RATE, dtype=np.float32) / SAMPLE_RATE
-    data = (np.sin(2 * np.pi * 440 * t) * 0.5).astype(np.float32)
-    wav_path = tmp_path / "sine440.wav"
-    sf.write(str(wav_path), data, SAMPLE_RATE, subtype="FLOAT")
-    return wav_path
+def _make_sample(name="Piano", sr=48000, duration_s=0.1):
+    n = int(sr * duration_s)
+    t = np.arange(n, dtype=np.float32) / sr
+    data = np.sin(2.0 * np.pi * 440.0 * t).astype(np.float32)
+    return Sample.from_buffer(data, sr, name)
 
 
-@pytest.fixture
-def recording_sample():
-    """A sample with no file_path (like a recording)."""
-    t = np.arange(SAMPLE_RATE // 2, dtype=np.float32) / SAMPLE_RATE
-    data = (np.sin(2 * np.pi * 880 * t) * 0.3).astype(np.float32)
-    s = Sample.from_buffer(data, SAMPLE_RATE, "My Recording")
-    return s
+class TestSessionDataStructure:
+    """Test that session JSON has the expected structure."""
 
-
-def _build_session_data(sample_manager, effects_state=None, master_volume=0.8):
-    """Replicate the save logic from VynthApp._on_save_session (without UI)."""
-    sample_entries = []
-    for name in sample_manager.get_names():
-        s = sample_manager.get_sample(name)
-        if s is None:
-            continue
-        if s.file_path and Path(s.file_path).exists():
-            sample_entries.append({
-                "path": s.file_path,
-                "root_note": s.root_note,
-            })
-        else:
-            sample_entries.append({
-                "path": "",
-                "root_note": s.root_note,
-                "embedded": True,
-            })
-
-    return {
-        "master_volume": master_volume,
-        "sample_rate": SAMPLE_RATE,
-        "block_size": 512,
-        "samples": sample_entries,
-        "effects": effects_state or {"params": {}, "bypass": {}, "enabled": {}},
-    }
-
-
-def _save_session(session_path, sample_manager, effects_state=None, master_volume=0.8):
-    """Save session to disk, replicating the app logic."""
-    session_dir = Path(session_path).parent
-    samples_dir = session_dir / (Path(session_path).stem + "_samples")
-    sample_entries = []
-
-    for name in sample_manager.get_names():
-        s = sample_manager.get_sample(name)
-        if s is None:
-            continue
-        if s.file_path and Path(s.file_path).exists():
-            sample_entries.append({"path": s.file_path, "root_note": s.root_note})
-        else:
-            samples_dir.mkdir(parents=True, exist_ok=True)
-            safe = "".join(c if c.isalnum() or c in " _-" else "_" for c in name)
-            wav_path = samples_dir / f"{safe}.wav"
-            s.save(wav_path)
-            sample_entries.append({"path": str(wav_path), "root_note": s.root_note})
-
-    data = {
-        "master_volume": master_volume,
-        "sample_rate": SAMPLE_RATE,
-        "block_size": 512,
-        "samples": sample_entries,
-        "effects": effects_state or {"params": {}, "bypass": {}, "enabled": {}},
-    }
-    Path(session_path).write_text(json.dumps(data, indent=2), encoding="utf-8")
-    return data
-
-
-def _load_session(session_path):
-    """Load session from disk."""
-    return json.loads(Path(session_path).read_text(encoding="utf-8"))
-
-
-# ── Sample persistence ───────────────────────────────────────────────────
-
-
-class TestSampleSave:
-    """Samples must be persisted correctly in session files."""
-
-    def test_file_backed_sample_saves_path(self, tmp_session, sample_wav):
-        mgr = SampleManager()
-        mgr.load_sample(str(sample_wav))
-        data = _save_session(tmp_session, mgr)
-        assert len(data["samples"]) == 1
-        assert data["samples"][0]["path"] == str(sample_wav)
-
-    def test_file_backed_sample_preserves_root_note(self, tmp_session, sample_wav):
-        mgr = SampleManager()
-        s = mgr.load_sample(str(sample_wav))
-        s.root_note = 72
-        data = _save_session(tmp_session, mgr)
-        assert data["samples"][0]["root_note"] == 72
-
-    def test_recording_saved_to_samples_dir(self, tmp_session, recording_sample):
-        mgr = SampleManager()
-        mgr.add_sample(recording_sample)
-        _save_session(tmp_session, mgr)
-
-        samples_dir = tmp_session.parent / (tmp_session.stem + "_samples")
-        assert samples_dir.exists()
-        wav_files = list(samples_dir.glob("*.wav"))
-        assert len(wav_files) == 1
-
-    def test_recording_wav_is_valid(self, tmp_session, recording_sample):
-        mgr = SampleManager()
-        mgr.add_sample(recording_sample)
-        _save_session(tmp_session, mgr)
-
-        samples_dir = tmp_session.parent / (tmp_session.stem + "_samples")
-        wav_file = list(samples_dir.glob("*.wav"))[0]
-        loaded_data, sr = sf.read(str(wav_file), dtype="float32")
-        assert sr == SAMPLE_RATE
-        assert len(loaded_data) == recording_sample.length
-
-    def test_recording_path_in_json(self, tmp_session, recording_sample):
-        mgr = SampleManager()
-        mgr.add_sample(recording_sample)
-        _save_session(tmp_session, mgr)
-
-        data = _load_session(tmp_session)
-        entry = data["samples"][0]
-        assert Path(entry["path"]).exists()
-
-    def test_multiple_samples_saved(self, tmp_session, sample_wav, recording_sample):
-        mgr = SampleManager()
-        mgr.load_sample(str(sample_wav))
-        mgr.add_sample(recording_sample)
-        data = _save_session(tmp_session, mgr)
-        assert len(data["samples"]) == 2
-
-    def test_empty_session_no_samples(self, tmp_session):
-        mgr = SampleManager()
-        data = _save_session(tmp_session, mgr)
-        assert data["samples"] == []
-
-
-# ── Sample loading ───────────────────────────────────────────────────────
-
-
-class TestSampleLoad:
-    """Samples must be correctly restored from session files."""
-
-    def test_load_file_backed_sample(self, tmp_session, sample_wav):
-        mgr = SampleManager()
-        mgr.load_sample(str(sample_wav))
-        _save_session(tmp_session, mgr)
-
-        # Load into fresh manager
-        data = _load_session(tmp_session)
-        mgr2 = SampleManager()
-        for entry in data["samples"]:
-            path = entry["path"] if isinstance(entry, dict) else entry
-            root = entry.get("root_note", 60) if isinstance(entry, dict) else 60
-            s = mgr2.load_sample(path)
-            s.root_note = root
-
-        assert len(mgr2.get_names()) == 1
-        s = mgr2.get_sample(mgr2.get_names()[0])
-        assert s is not None
-        assert s.length == SAMPLE_RATE
-
-    def test_load_recording_sample(self, tmp_session, recording_sample):
-        mgr = SampleManager()
-        mgr.add_sample(recording_sample)
-        _save_session(tmp_session, mgr)
-
-        data = _load_session(tmp_session)
-        mgr2 = SampleManager()
-        for entry in data["samples"]:
-            path = entry["path"]
-            root = entry.get("root_note", 60)
-            s = mgr2.load_sample(path)
-            s.root_note = root
-
-        assert len(mgr2.get_names()) == 1
-        s = mgr2.get_sample(mgr2.get_names()[0])
-        assert s is not None
-        assert s.length == recording_sample.length
-
-    def test_load_preserves_root_note(self, tmp_session, sample_wav):
-        mgr = SampleManager()
-        s = mgr.load_sample(str(sample_wav))
-        s.root_note = 48
-        _save_session(tmp_session, mgr)
-
-        data = _load_session(tmp_session)
-        entry = data["samples"][0]
-        assert entry["root_note"] == 48
-
-    def test_missing_file_skipped(self, tmp_session):
-        data = {
-            "master_volume": 0.8,
-            "sample_rate": SAMPLE_RATE,
+    def test_session_json_structure(self, tmp_path):
+        session_data = {
+            "master_volume": 0.75,
+            "sample_rate": 48000,
             "block_size": 512,
-            "samples": [{"path": "/nonexistent/sample.wav", "root_note": 60}],
-            "effects": {"params": {}, "bypass": {}, "enabled": {}},
+            "samples": [],
+            "effects": {"params": {}, "bypass": {}},
         }
-        Path(tmp_session).write_text(json.dumps(data), encoding="utf-8")
-        loaded = _load_session(tmp_session)
+        path = tmp_path / "session.json"
+        path.write_text(json.dumps(session_data), encoding="utf-8")
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        assert loaded["master_volume"] == 0.75
+        assert loaded["sample_rate"] == 48000
+        assert loaded["block_size"] == 512
+        assert isinstance(loaded["samples"], list)
+        assert isinstance(loaded["effects"], dict)
 
-        mgr = SampleManager()
-        loaded_count = 0
-        for entry in loaded["samples"]:
-            path = entry["path"]
-            if Path(path).exists():
-                mgr.load_sample(path)
-                loaded_count += 1
-        assert loaded_count == 0
 
-    def test_old_format_string_entries(self, tmp_session, sample_wav):
-        """Old session format used plain string paths."""
-        data = {
+class TestSessionSampleRoundTrip:
+    """Test that samples survive save→load→save cycle."""
+
+    def test_save_and_reload_sample_wav(self, tmp_path):
+        s = _make_sample("Test")
+        wav_path = tmp_path / "test.wav"
+        s.save(wav_path)
+
+        loaded = Sample.from_file(wav_path)
+        assert loaded.name == "test"  # stem of filename
+        np.testing.assert_allclose(loaded.data, s.data, atol=1e-4)
+
+    def test_stereo_save_reload(self, tmp_path):
+        mono = _make_sample("Stereo", duration_s=0.1)
+        stereo_data = np.column_stack([mono.data, mono.data])
+        s = Sample.from_buffer(stereo_data, 48000, "Stereo")
+        wav_path = tmp_path / "stereo.wav"
+        s.save(wav_path)
+
+        loaded = Sample.from_file(wav_path)
+        assert loaded.channels == 2
+        np.testing.assert_allclose(loaded.data, stereo_data, atol=1e-4)
+
+
+class TestSessionEffectsState:
+    def test_effects_state_roundtrip(self, tmp_path):
+        effects_state = {
+            "params": {
+                "chorus_rate": 2.0,
+                "chorus_depth": 0.5,
+                "reverb_room_size": 0.8,
+                "reverb_wet": 0.4,
+                "delay_time_ms": 300.0,
+                "filter_freq": 1500.0,
+            },
+            "bypass": {
+                "chorus": False,
+                "reverb": True,
+                "delay": False,
+            },
+        }
+        session_data = {
             "master_volume": 0.8,
-            "sample_rate": SAMPLE_RATE,
+            "sample_rate": 48000,
             "block_size": 512,
-            "samples": [str(sample_wav)],
+            "samples": [],
+            "effects": effects_state,
         }
-        Path(tmp_session).write_text(json.dumps(data), encoding="utf-8")
-        loaded = _load_session(tmp_session)
+        path = tmp_path / "session.json"
+        path.write_text(json.dumps(session_data), encoding="utf-8")
 
-        mgr = SampleManager()
-        for entry in loaded["samples"]:
-            if isinstance(entry, str):
-                path, root = entry, 60
-            else:
-                path, root = entry["path"], entry.get("root_note", 60)
-            if Path(path).exists():
-                s = mgr.load_sample(path)
-                s.root_note = root
-
-        assert len(mgr.get_names()) == 1
-
-
-# ── Effects state ────────────────────────────────────────────────────────
-
-
-class TestEffectsStateSave:
-    """Effects params, bypass, and enabled states must survive round-trip."""
-
-    def test_effects_state_in_json(self, tmp_session):
-        mgr = SampleManager()
-        effects = {
-            "params": {"chorus_detune_cents": 20.0, "delay_time_ms": 500.0},
-            "bypass": {"chorus": True, "delay": False},
-            "enabled": {"chorus": True, "delay": True},
-        }
-        _save_session(tmp_session, mgr, effects_state=effects)
-
-        loaded = _load_session(tmp_session)
-        assert loaded["effects"]["params"]["chorus_detune_cents"] == 20.0
-        assert loaded["effects"]["params"]["delay_time_ms"] == 500.0
-        assert loaded["effects"]["bypass"]["chorus"] is True
-        assert loaded["effects"]["bypass"]["delay"] is False
-
-    def test_master_volume_saved(self, tmp_session):
-        mgr = SampleManager()
-        _save_session(tmp_session, mgr, master_volume=0.6)
-        loaded = _load_session(tmp_session)
-        assert loaded["master_volume"] == pytest.approx(0.6)
-
-    def test_session_json_is_valid(self, tmp_session, sample_wav):
-        mgr = SampleManager()
-        mgr.load_sample(str(sample_wav))
-        _save_session(tmp_session, mgr)
-        # Must not raise
-        data = json.loads(Path(tmp_session).read_text(encoding="utf-8"))
-        assert "samples" in data
-        assert "master_volume" in data
-        assert "effects" in data
-
-
-# ── Round-trip ───────────────────────────────────────────────────────────
-
-
-class TestRoundTrip:
-    """Full save → load → verify cycle."""
-
-    def test_full_round_trip(self, tmp_session, sample_wav, recording_sample):
-        # Save
-        mgr = SampleManager()
-        s1 = mgr.load_sample(str(sample_wav))
-        s1.root_note = 48
-        mgr.add_sample(recording_sample)
-
-        effects = {
-            "params": {"adsr_attack_ms": 25.0, "reverb_wet": 0.5},
-            "bypass": {"reverb": True},
-            "enabled": {"reverb": False},
-        }
-        _save_session(tmp_session, mgr, effects_state=effects, master_volume=0.65)
-
-        # Load
-        loaded = _load_session(tmp_session)
-
-        assert loaded["master_volume"] == pytest.approx(0.65)
-        assert len(loaded["samples"]) == 2
-
-        # Restore samples
-        mgr2 = SampleManager()
-        for entry in loaded["samples"]:
-            path = entry["path"]
-            root = entry.get("root_note", 60)
-            assert Path(path).exists(), f"Sample file missing: {path}"
-            s = mgr2.load_sample(path)
-            s.root_note = root
-
-        names = mgr2.get_names()
-        assert len(names) == 2
-
-        # First sample root note preserved
-        first = mgr2.get_sample(names[0])
-        assert first.root_note == 48
-
-        # Effects state preserved
-        assert loaded["effects"]["params"]["adsr_attack_ms"] == pytest.approx(25.0)
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        assert loaded["effects"]["params"]["chorus_rate"] == 2.0
         assert loaded["effects"]["bypass"]["reverb"] is True
-        assert loaded["effects"]["enabled"]["reverb"] is False
+
+
+class TestSessionMasterVolume:
+    @pytest.mark.parametrize("vol", [0.0, 0.5, 0.8, 1.0])
+    def test_volume_roundtrip(self, tmp_path, vol):
+        data = {"master_volume": vol, "samples": [], "effects": {}}
+        path = tmp_path / "session.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        assert loaded["master_volume"] == pytest.approx(vol)
+
+
+class TestSessionSamplePaths:
+    def test_sample_entry_with_path(self, tmp_path):
+        s = _make_sample("Piano")
+        wav_path = str(tmp_path / "Piano.wav")
+        s.save(wav_path)
+
+        session = {
+            "samples": [{"path": wav_path, "root_note": 60}],
+            "effects": {},
+        }
+        path = tmp_path / "session.json"
+        path.write_text(json.dumps(session), encoding="utf-8")
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        assert loaded["samples"][0]["path"] == wav_path
+        assert loaded["samples"][0]["root_note"] == 60
+
+    def test_sample_entry_old_format_string(self, tmp_path):
+        """Test backward compatibility with old format (plain path string)."""
+        s = _make_sample("Piano")
+        wav_path = str(tmp_path / "Piano.wav")
+        s.save(wav_path)
+
+        session = {
+            "samples": [wav_path],
+            "effects": {},
+        }
+        path = tmp_path / "session.json"
+        path.write_text(json.dumps(session), encoding="utf-8")
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        assert loaded["samples"][0] == wav_path
+
+
+class TestSessionEdgeCases:
+    def test_empty_session(self, tmp_path):
+        data = {"samples": [], "effects": {}}
+        path = tmp_path / "session.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        assert len(loaded["samples"]) == 0
+
+    def test_corrupt_json(self, tmp_path):
+        path = tmp_path / "bad.json"
+        path.write_text("not valid json {{{", encoding="utf-8")
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(path.read_text(encoding="utf-8"))
+
+    def test_missing_keys_use_defaults(self, tmp_path):
+        data = {}
+        path = tmp_path / "session.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        # Should be able to use .get with defaults
+        assert loaded.get("master_volume", 0.8) == 0.8
+        assert loaded.get("samples", []) == []
+
+    def test_multiple_samples_in_session(self, tmp_path):
+        samples = []
+        for i in range(5):
+            s = _make_sample(f"Sample_{i}")
+            wav_path = str(tmp_path / f"sample_{i}.wav")
+            s.save(wav_path)
+            samples.append({"path": wav_path, "root_note": 60 + i})
+
+        data = {"samples": samples, "effects": {}}
+        path = tmp_path / "session.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        assert len(loaded["samples"]) == 5

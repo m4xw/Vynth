@@ -19,6 +19,7 @@ from vynth.utils.audio_utils import note_to_freq
 class PlaybackMode(enum.Enum):
     SAMPLER = enum.auto()
     GRANULAR = enum.auto()
+    SLICE = enum.auto()
 
 
 class Voice:
@@ -43,6 +44,11 @@ class Voice:
         "_formant",
         "_filter",
         "_granular",
+        # Slice mode config
+        "_slice_num_slices",
+        "_slice_start_note",
+        "_slice_start_frame",
+        "_slice_end_frame",
     )
 
     def __init__(self, voice_id: int, sample_rate: int = SAMPLE_RATE) -> None:
@@ -57,6 +63,12 @@ class Voice:
         self._pitch_ratio: float = 1.0
         self._start_time: float = 0.0
         self._mode: PlaybackMode = PlaybackMode.SAMPLER
+
+        # Slice mode config
+        self._slice_num_slices: int = 16
+        self._slice_start_note: int = 36  # C2
+        self._slice_start_frame: int = 0
+        self._slice_end_frame: int = 0
 
         # Per-voice DSP
         self._adsr = ADSREnvelope(sample_rate)
@@ -98,7 +110,6 @@ class Voice:
         self._sample = sample
         self._note = note
         self._velocity = velocity
-        self._position = float(start_frame)
         self._playing = True
         self._start_time = time.monotonic()
 
@@ -112,11 +123,28 @@ class Voice:
 
         self._adsr.gate_on(velocity / 127.0)
 
-        # Granular mode setup
-        if self._mode == PlaybackMode.GRANULAR:
+        if self._mode == PlaybackMode.SLICE:
+            # Calculate which slice this note maps to
+            slice_idx = note - self._slice_start_note
+            if slice_idx < 0 or slice_idx >= self._slice_num_slices:
+                # Note outside slice range — don't play
+                self._playing = False
+                self._adsr.reset()
+                return
+            slice_len = max(1, sample.length // self._slice_num_slices)
+            self._slice_start_frame = slice_idx * slice_len
+            self._slice_end_frame = min((slice_idx + 1) * slice_len, sample.length)
+            self._position = float(self._slice_start_frame)
+            # In slice mode, pitch ratio is 1.0 (each slice plays at original pitch)
+            self._pitch_ratio = 1.0
+        elif self._mode == PlaybackMode.GRANULAR:
+            self._position = float(start_frame)
             self._granular.set_source(sample.mono, sample.sample_rate)
             self._granular.set_param("pitch_ratio", self._pitch_ratio)
             self._granular.reset()
+        else:
+            # SAMPLER mode
+            self._position = float(start_frame)
 
     def note_off(self) -> None:
         """Trigger ADSR release; the voice stays active until the envelope reaches IDLE."""
@@ -149,6 +177,9 @@ class Voice:
 
         if self._mode == PlaybackMode.GRANULAR:
             return self._process_granular(n_frames)
+
+        if self._mode == PlaybackMode.SLICE:
+            return self._process_slice(n_frames)
 
         return self._process_sampler(n_frames)
 
@@ -228,6 +259,54 @@ class Voice:
 
         return out.astype(np.float32)
 
+    # ── Slice playback ───────────────────────────────────────────────────
+
+    def _process_slice(self, n_frames: int) -> np.ndarray:
+        """Play a specific slice of the sample (one-shot, no loop)."""
+        sample = self._sample
+        assert sample is not None
+
+        stereo = sample.get_stereo()
+        slice_end = self._slice_end_frame
+
+        out = np.zeros((n_frames, 2), dtype=np.float32)
+        pos = self._position
+
+        for i in range(n_frames):
+            if not self._playing:
+                break
+
+            idx0 = int(pos)
+            frac = pos - idx0
+
+            if idx0 >= slice_end - 1:
+                self._playing = False
+                break
+
+            idx1 = min(idx0 + 1, slice_end - 1)
+
+            # Linear interpolation
+            out[i] = stereo[idx0] * (1.0 - frac) + stereo[idx1] * frac
+
+            pos += self._pitch_ratio
+
+        self._position = pos
+
+        # Apply ADSR envelope
+        out = self._adsr.process(out)
+
+        # Apply per-voice filter
+        out = self._filter.process_maybe_bypass(out)
+
+        return out.astype(np.float32)
+
+    # ── Slice configuration ──────────────────────────────────────────────
+
+    def set_slice_config(self, num_slices: int, start_note: int) -> None:
+        """Configure slice mode parameters."""
+        self._slice_num_slices = max(1, min(num_slices, 128))
+        self._slice_start_note = max(0, min(start_note, 127))
+
     # ── Reset ────────────────────────────────────────────────────────────
 
     def reset(self) -> None:
@@ -239,6 +318,8 @@ class Voice:
         self._position = 0.0
         self._pitch_ratio = 1.0
         self._start_time = 0.0
+        self._slice_start_frame = 0
+        self._slice_end_frame = 0
         self._adsr.reset()
         self._pitch_shifter.reset()
         self._formant.reset()

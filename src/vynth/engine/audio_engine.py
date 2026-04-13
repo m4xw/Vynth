@@ -183,7 +183,7 @@ class AudioEngine(QObject):
                     "sustain", 1.0 if cmd.param_value >= 64 else 0.0
                 )
             case CommandType.SET_PLAYBACK_MODE:
-                self._voice_allocator.set_param("playback_mode", cmd.param_value)
+                self._voice_allocator.set_playback_mode(cmd.data)
 
     def _stream_finished(self) -> None:
         log.debug("Stream finished callback fired")

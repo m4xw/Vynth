@@ -140,6 +140,18 @@ class ADSREnvelope(DSPEffect):
         Handles mono ``(N,)`` and stereo ``(N, 2)`` arrays.
         """
         if self._bypassed:
+            # Bypass keeps full-level playback, but still applies release fade
+            # after note-off to avoid abrupt clicks.
+            if self._state == ADSRState.ATTACK:
+                self._level = self._peak
+                self._state = ADSRState.SUSTAIN
+            if self._state == ADSRState.RELEASE:
+                env = self.generate(data.shape[0])
+                norm = max(self._peak, self._SILENCE_THRESHOLD)
+                gain = env / norm
+                if data.ndim == 2:
+                    gain = gain[:, np.newaxis]
+                return data * gain
             return data
 
         n_frames = data.shape[0]

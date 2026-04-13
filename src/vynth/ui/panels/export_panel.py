@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QProgressBar, QFileDialog, QGroupBox,
-    QDialogButtonBox, QWidget,
+    QDialogButtonBox, QWidget, QCheckBox,
 )
 
 from vynth.ui.theme import Colors
@@ -70,6 +70,15 @@ class ExportPanel(QDialog):
 
         layout.addWidget(fmt_group)
 
+        # --- Apply effects toggle --------------------------------------------
+        self._apply_effects_cb = QCheckBox("Apply effects (ADSR, Filter, Chorus, Delay, Reverb, Limiter)")
+        self._apply_effects_cb.setChecked(True)
+        self._apply_effects_cb.setToolTip(
+            "When enabled, the exported audio includes all current effect settings.\n"
+            "When disabled, the raw sample data is exported."
+        )
+        layout.addWidget(self._apply_effects_cb)
+
         # --- File size estimate ----------------------------------------------
         self._estimate_label = QLabel("Estimated size: —")
         self._estimate_label.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; font-size: 11px;")
@@ -103,6 +112,7 @@ class ExportPanel(QDialog):
             "path": self._path_edit.text(),
             "sr": int(self._sr_combo.currentText()),
             "bits": int(self._bits_combo.currentText()),
+            "apply_effects": self._apply_effects_cb.isChecked(),
         }
 
     def set_duration(self, seconds: float, channels: int = 2) -> None:

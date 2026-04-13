@@ -28,6 +28,11 @@ class WaveformView(QWidget):
         self._selection_end: int | None = None
         self._drag_active = False
         self._total_frames = 0
+        self._filter_overlay_active = False
+        self._filter_freq_hz = 1000.0
+        self._filter_q = 0.707
+        self._filter_mode = 0
+        self._filter_gain_db = 0.0
 
         self._setup_ui()
         self._setup_plot()
@@ -125,6 +130,25 @@ class WaveformView(QWidget):
         self._loop_region.hide()
         plot.addItem(self._loop_region)
 
+        # Filter marker overlays (frequency mapped to timeline for visual reference)
+        filt_pen = pg.mkPen(Colors.ACCENT_WARM, width=2, style=Qt.PenStyle.DashLine)
+        self._filter_cutoff_line = pg.InfiniteLine(pos=0, angle=90, pen=filt_pen)
+        self._filter_cutoff_line.hide()
+        plot.addItem(self._filter_cutoff_line)
+
+        filt_fill = QColor(Colors.ACCENT_WARM)
+        filt_fill.setAlpha(24)
+        self._filter_q_region = pg.LinearRegionItem(
+            values=[0, 0], brush=filt_fill, movable=False,
+            pen=pg.mkPen(Colors.ACCENT_WARM, width=1),
+        )
+        self._filter_q_region.hide()
+        plot.addItem(self._filter_q_region)
+
+        self._filter_info = pg.TextItem(anchor=(1.0, 0.0), color=Colors.TEXT_PRIMARY)
+        self._filter_info.hide()
+        plot.addItem(self._filter_info)
+
         # View linking
         vb = plot.getViewBox()
         vb.setMouseEnabled(x=True, y=False)
@@ -188,6 +212,7 @@ class WaveformView(QWidget):
         self._loop_start_line.hide()
         self._loop_end_line.hide()
         self._loop_region.hide()
+        self.clear_filter_overlay()
 
     def zoom_to_selection(self) -> None:
         """Zoom view to the current selection."""
@@ -219,6 +244,28 @@ class WaveformView(QWidget):
         self._stereo_overlay = overlay
         if self._data is not None:
             self._draw_waveform()
+
+    def set_filter_overlay(
+        self,
+        frequency_hz: float,
+        q: float,
+        mode: int,
+        gain_db: float = 0.0,
+    ) -> None:
+        """Show/update filter markers on top of the waveform."""
+        self._filter_overlay_active = True
+        self._filter_freq_hz = float(frequency_hz)
+        self._filter_q = float(max(0.1, q))
+        self._filter_mode = int(mode)
+        self._filter_gain_db = float(gain_db)
+        self._update_filter_overlay()
+
+    def clear_filter_overlay(self) -> None:
+        """Hide filter overlays."""
+        self._filter_overlay_active = False
+        self._filter_cutoff_line.hide()
+        self._filter_q_region.hide()
+        self._filter_info.hide()
 
     # ── Drawing ───────────────────────────────────────────────────────
 
@@ -355,6 +402,7 @@ class WaveformView(QWidget):
         self._scrollbar.setValue(int(x_range[0] * 1000))
         self._scrollbar.blockSignals(False)
         self._draw_waveform()
+        self._update_filter_overlay()
 
     def _on_scroll(self, value: int) -> None:
         t_start = value / 1000.0
@@ -431,3 +479,52 @@ class WaveformView(QWidget):
         e = max(self._selection_start, self._selection_end)
         self._selection_region.setRegion([s / self._sample_rate, e / self._sample_rate])
         self._selection_region.show()
+
+    def _update_filter_overlay(self) -> None:
+        if not self._filter_overlay_active or self._data is None or self._total_frames <= 0:
+            self._filter_cutoff_line.hide()
+            self._filter_q_region.hide()
+            self._filter_info.hide()
+            return
+
+        def map_freq_to_time(freq_hz: float, duration: float) -> float:
+            f = float(np.clip(freq_hz, 20.0, 20_000.0))
+            norm = (np.log10(f) - np.log10(20.0)) / (np.log10(20_000.0) - np.log10(20.0))
+            return norm * duration
+
+        duration = self._total_frames / float(self._sample_rate)
+        cutoff_x = map_freq_to_time(self._filter_freq_hz, duration)
+
+        bandwidth = self._filter_freq_hz / self._filter_q
+        low_hz = max(20.0, self._filter_freq_hz - (bandwidth * 0.5))
+        high_hz = min(20_000.0, self._filter_freq_hz + (bandwidth * 0.5))
+        low_x = map_freq_to_time(low_hz, duration)
+        high_x = map_freq_to_time(high_hz, duration)
+        if high_x - low_x < 1e-4:
+            high_x = low_x + 1e-4
+
+        self._filter_cutoff_line.setValue(cutoff_x)
+        self._filter_cutoff_line.show()
+        self._filter_q_region.setRegion([low_x, high_x])
+        self._filter_q_region.show()
+
+        mode_name = {
+            0: "LowPass",
+            1: "HighPass",
+            2: "BandPass",
+            3: "Notch",
+            4: "Peak",
+            5: "LowShelf",
+            6: "HighShelf",
+        }.get(self._filter_mode, "Unknown")
+        text = (
+            f"Filter: {mode_name} | {self._filter_freq_hz:.0f} Hz | "
+            f"Q={self._filter_q:.2f} | Gain={self._filter_gain_db:+.1f} dB"
+        )
+
+        x_range, y_range = self._plot_widget.viewRange()
+        x = x_range[1]
+        y = y_range[1] - 0.02 * (y_range[1] - y_range[0])
+        self._filter_info.setText(text)
+        self._filter_info.setPos(x, y)
+        self._filter_info.show()

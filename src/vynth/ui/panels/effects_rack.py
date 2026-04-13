@@ -85,6 +85,8 @@ class EffectsRack(QWidget):
 
     paramChanged = pyqtSignal(str, float)
     bypassChanged = pyqtSignal(str, bool)  # (effect_prefix, bypassed)
+    playbackModeChanged = pyqtSignal(int)  # PlaybackMode enum value
+    sliceConfigChanged = pyqtSignal(int, int)  # (num_slices, start_note)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -104,6 +106,7 @@ class EffectsRack(QWidget):
         self._layout.setSpacing(6)
         self._layout.setContentsMargins(4, 4, 4, 4)
 
+        self._build_playback_mode()
         self._build_adsr()
         self._build_pitch_shift()
         self._build_filter()
@@ -141,6 +144,9 @@ class EffectsRack(QWidget):
         for prefix, mod in self._modules.items():
             state["bypass"][prefix] = mod._bypass_btn.isChecked()
             state["enabled"][prefix] = mod.isChecked()
+        state["playback_mode"] = self._mode_combo.currentIndex()
+        state["slice_num_slices"] = self._slice_num_spin.value()
+        state["slice_start_note"] = self._slice_note_spin.value()
         return state
 
     def set_all_state(self, state: dict) -> None:
@@ -157,6 +163,12 @@ class EffectsRack(QWidget):
             mod = self._modules.get(prefix)
             if mod is not None:
                 mod.setChecked(enabled)
+        if "playback_mode" in state:
+            self._mode_combo.setCurrentIndex(state["playback_mode"])
+        if "slice_num_slices" in state:
+            self._slice_num_spin.setValue(state["slice_num_slices"])
+        if "slice_start_note" in state:
+            self._slice_note_spin.setValue(state["slice_start_note"])
 
     def reset_all(self) -> None:
         """Reset all knobs to their default values and restore default bypass states."""
@@ -165,6 +177,9 @@ class EffectsRack(QWidget):
         for prefix, mod in self._modules.items():
             mod._bypass_btn.setChecked(self._default_bypass.get(prefix, False))
             mod.setChecked(True)
+        self._mode_combo.setCurrentIndex(0)
+        self._slice_num_spin.setValue(16)
+        self._slice_note_spin.setValue(36)
         self.force_emit_all_bypass()
 
     def force_emit_all_bypass(self) -> None:
@@ -198,6 +213,74 @@ class EffectsRack(QWidget):
 
     def _emit(self, key: str, value: float) -> None:
         self.paramChanged.emit(key, value)
+
+    # --- Playback Mode ------------------------------------------------------
+
+    def _build_playback_mode(self) -> None:
+        grp = QGroupBox("Playback Mode")
+        lay = QVBoxLayout(grp)
+        lay.setContentsMargins(4, 8, 4, 4)
+        lay.setSpacing(4)
+
+        mode_row = QHBoxLayout()
+        self._mode_combo = QComboBox()
+        self._mode_combo.addItems(["Sampler", "Granular", "Slice"])
+        self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        mode_row.addWidget(self._mode_combo)
+        lay.addLayout(mode_row)
+
+        # Slice config (visible only in slice mode)
+        self._slice_config_widget = QWidget()
+        slice_lay = QHBoxLayout(self._slice_config_widget)
+        slice_lay.setContentsMargins(0, 0, 0, 0)
+        slice_lay.setSpacing(8)
+
+        self._slice_num_spin = QSpinBox()
+        self._slice_num_spin.setRange(2, 128)
+        self._slice_num_spin.setValue(16)
+        self._slice_num_spin.setPrefix("Slices: ")
+        self._slice_num_spin.setToolTip("Number of equal slices")
+        self._slice_num_spin.valueChanged.connect(self._on_slice_config_changed)
+        slice_lay.addWidget(self._slice_num_spin)
+
+        self._slice_note_spin = QSpinBox()
+        self._slice_note_spin.setRange(0, 127)
+        self._slice_note_spin.setValue(36)
+        self._slice_note_spin.setPrefix("Start: ")
+        self._slice_note_spin.setToolTip("MIDI note for the first slice (36 = C2)")
+        self._slice_note_spin.valueChanged.connect(self._on_slice_config_changed)
+        slice_lay.addWidget(self._slice_note_spin)
+
+        self._slice_config_widget.setVisible(False)
+        lay.addWidget(self._slice_config_widget)
+
+        self._layout.addWidget(grp)
+
+    def _on_mode_changed(self, index: int) -> None:
+        self._slice_config_widget.setVisible(index == 2)
+        self.playbackModeChanged.emit(index)
+
+    def _on_slice_config_changed(self) -> None:
+        self.sliceConfigChanged.emit(
+            self._slice_num_spin.value(),
+            self._slice_note_spin.value(),
+        )
+
+    @property
+    def playback_mode_index(self) -> int:
+        return self._mode_combo.currentIndex()
+
+    @playback_mode_index.setter
+    def playback_mode_index(self, index: int) -> None:
+        self._mode_combo.setCurrentIndex(index)
+
+    @property
+    def slice_num_slices(self) -> int:
+        return self._slice_num_spin.value()
+
+    @property
+    def slice_start_note(self) -> int:
+        return self._slice_note_spin.value()
 
     # --- ADSR ---------------------------------------------------------------
 

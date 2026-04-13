@@ -6,7 +6,7 @@ import math
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QSizePolicy,
+    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QSizePolicy, QComboBox,
 )
 
 from vynth.ui.theme import Colors
@@ -19,6 +19,7 @@ class MixerPanel(QWidget):
     """Master mixer with volume and meters."""
 
     volumeChanged = pyqtSignal(float)
+    visualizerModeChanged = pyqtSignal(str)
     MIN_DB = -60.0
     MAX_DB = 50.0
 
@@ -68,6 +69,20 @@ class MixerPanel(QWidget):
         )
         layout.addWidget(self._pan, alignment=Qt.AlignmentFlag.AlignCenter)
 
+        # --- Visualizer mode -----------------------------------------------
+        vis_row = QHBoxLayout()
+        vis_row.setSpacing(6)
+        vis_label = QLabel("Visualizer")
+        vis_label.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; font-size: 11px;")
+        vis_row.addWidget(vis_label)
+
+        self._visualizer_mode = QComboBox()
+        self._visualizer_mode.addItem("Spectrum", "spectrum")
+        self._visualizer_mode.addItem("Rendered", "rendered")
+        self._visualizer_mode.currentIndexChanged.connect(self._on_visualizer_mode_changed)
+        vis_row.addWidget(self._visualizer_mode)
+        layout.addLayout(vis_row)
+
         # --- Info labels -----------------------------------------------------
         info_row = QVBoxLayout()
         info_row.setSpacing(2)
@@ -102,6 +117,14 @@ class MixerPanel(QWidget):
     def set_cpu_load(self, percent: float) -> None:
         self._cpu_label.setText(f"CPU: {percent:.0f} %")
 
+    def set_visualizer_mode(self, mode: str) -> None:
+        idx = self._visualizer_mode.findData(mode)
+        if idx < 0:
+            return
+        self._visualizer_mode.blockSignals(True)
+        self._visualizer_mode.setCurrentIndex(idx)
+        self._visualizer_mode.blockSignals(False)
+
     # -- internals -----------------------------------------------------------
 
     @classmethod
@@ -122,3 +145,8 @@ class MixerPanel(QWidget):
         else:
             self._db_label.setText(f"{value:+.1f} dB")
         self.volumeChanged.emit(self._db_to_linear(value))
+
+    def _on_visualizer_mode_changed(self) -> None:
+        mode = self._visualizer_mode.currentData()
+        if isinstance(mode, str):
+            self.visualizerModeChanged.emit(mode)

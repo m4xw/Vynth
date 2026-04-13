@@ -136,6 +136,12 @@ class VoiceAllocator:
             self._reverb.set_param(name[7:], value)
         elif name.startswith("limiter_"):
             self._limiter.set_param(name[8:], value)
+        elif name.startswith("slice_"):
+            param = name[6:]
+            if param == "num_slices":
+                self.set_slice_config(int(value), self.voices[0]._slice_start_note)
+            elif param == "start_note":
+                self.set_slice_config(self.voices[0]._slice_num_slices, int(value))
 
     def get_param(self, name: str) -> float:
         """Read back a parameter value."""
@@ -188,6 +194,11 @@ class VoiceAllocator:
         """Set the playback mode for all voices."""
         for v in self.voices:
             v.mode = mode
+
+    def set_slice_config(self, num_slices: int, start_note: int) -> None:
+        """Configure slice mode parameters for all voices."""
+        for v in self.voices:
+            v.set_slice_config(num_slices, start_note)
 
     # ── State ────────────────────────────────────────────────────────────
 
